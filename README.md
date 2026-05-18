@@ -10,7 +10,7 @@
 [![Groq](https://img.shields.io/badge/Groq-LLM%20%2B%20STT-f55036?style=for-the-badge)](https://groq.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-violet?style=for-the-badge)](LICENSE)
 
-**[Live Dashboard](https://frontend-omega-six-37.vercel.app)** · **[API Docs](docs/ARCHITECTURE.md)** · **[Deploy Guide](docs/VERCEL_DEPLOY.md)**
+**[Live Dashboard](https://frontend-omega-six-37.vercel.app)** · **[Technical Architecture](docs/ARCHITECTURE.md)** · **[Documentation](docs/README.md)** · **[Deploy Guide](docs/VERCEL_DEPLOY.md)**
 
 
 ---
@@ -30,20 +30,47 @@ Built for loan follow-up, sales, and support teams who need **low-latency**, **b
 
 ---
 
-## Architecture
+## Technical architecture
 
-```
-┌─────────────┐     REST      ┌──────────────────┐
-│  Dashboard  │ ────────────► │  FastAPI API     │
-│  (Vercel)   │               │  (Railway)       │
-└─────────────┘               └────────┬─────────┘
-                                       │ WebSocket
-┌─────────────┐     PSTN      ┌────────▼─────────┐
-│   Phone     │ ◄───────────► │     Twilio       │
-└─────────────┘               └──────────────────┘
+The platform is a **four-layer voice AI system**: real-time telephony (Twilio + WebSocket), agentic dialogue (state machine + memory), enterprise CRM (PostgreSQL), and async scale-out (Redis workers + Prometheus).
+
+```mermaid
+flowchart TB
+    subgraph Presentation
+        FE[Next.js Dashboard · Vercel]
+    end
+    subgraph Application
+        API[FastAPI Voice API · Railway]
+        WRK[Background Workers]
+    end
+    subgraph Intelligence
+        STT[Groq Whisper]
+        LLM[Groq Llama]
+        TTS[Kokoro TTS]
+    end
+    subgraph Data
+        PG[(PostgreSQL)]
+        RD[(Redis)]
+    end
+    TW[Twilio PSTN]
+
+    FE -->|REST| API
+    API <-->|Media Stream WSS| TW
+    API --> STT & LLM & TTS
+    API --> PG & RD
+    WRK --> RD & PG
+    TW --> Customer((Customer))
 ```
 
-**Layered design:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+| Layer | Responsibility | Docs |
+|-------|----------------|------|
+| **L1 — Voice** | 8 kHz audio, STT, TTS, barge-in | [Architecture §6](docs/ARCHITECTURE.md#6-real-time-voice-pipeline) |
+| **L2 — Intelligence** | States, objections, intent, escalation | [Architecture §7](docs/ARCHITECTURE.md#7-conversation-intelligence) |
+| **L3 — Enterprise** | CRM, analytics, Slack alerts | [Architecture §8–9](docs/ARCHITECTURE.md#8-data-architecture) |
+| **L4 — Scale** | Job queue, metrics, tracing | [Architecture §10–11](docs/ARCHITECTURE.md#10-background-processing) |
+
+**Full specification (diagrams, sequence flows, API catalog, ER model, security):**  
+👉 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**
 
 ---
 
@@ -92,12 +119,21 @@ See [`.env.example`](.env.example). Required for calls:
 ## Project structure
 
 ```
-├── frontend/          # Next.js dashboard
-├── backend/           # FastAPI + WebSocket voice handler
-├── docs/              # Architecture, deployment, latency
-├── scripts/           # DB init, dev helpers
-├── Dockerfile         # API container (Railway/Render)
-└── docker-compose.yml # Local full stack
+├── frontend/              # Next.js operator dashboard
+├── backend/
+│   ├── app/api/routes/    # REST + Twilio WebSocket
+│   ├── app/conversation/  # Dialogue orchestration (Layer 2)
+│   ├── app/services/      # STT, LLM, TTS, CRM
+│   ├── app/workers/       # Async jobs (Layer 4)
+│   └── app/observability/ # Latency + Prometheus
+├── docs/
+│   ├── ARCHITECTURE.md    # ★ Primary technical reference
+│   ├── DEPLOYMENT.md
+│   ├── LATENCY.md
+│   └── VERCEL_DEPLOY.md
+├── scripts/init_db.sql
+├── Dockerfile
+└── docker-compose.yml
 ```
 
 ---

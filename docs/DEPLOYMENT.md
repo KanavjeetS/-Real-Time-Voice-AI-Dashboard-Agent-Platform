@@ -1,4 +1,8 @@
-# AI Calling Agent — Deployment Guide
+# Deployment Guide
+
+Operational guide for running **AI Calling Agent** locally and in production.
+
+> **System design:** See [ARCHITECTURE.md](./ARCHITECTURE.md) for deployment topology, component responsibilities, and webhook configuration.
 
 ## Quick start (Docker — recommended)
 

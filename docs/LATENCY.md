@@ -1,4 +1,8 @@
-# AI Calling Agent — Latency Report & Optimization
+# Latency & Performance
+
+Performance targets and measurement for the voice pipeline.
+
+> **Architecture context:** [ARCHITECTURE.md §6 & §11](./ARCHITECTURE.md#6-real-time-voice-pipeline)
 
 ## Target SLOs (production voice agent)
 
