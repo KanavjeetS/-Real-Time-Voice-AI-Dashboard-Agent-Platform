@@ -1,0 +1,54 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --foreground: 248 250 252;
+  --background: 3 7 18;
+  --accent: 99 102 241;
+  --accent-glow: 129 140 248;
+  --surface: 15 23 42;
+  --border: 51 65 85;
+}
+
+body {
+  color: rgb(var(--foreground));
+  background: rgb(var(--background));
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(99, 102, 241, 0.18), transparent),
+    radial-gradient(ellipse 60% 40% at 100% 0%, rgba(139, 92, 246, 0.12), transparent),
+    radial-gradient(ellipse 50% 30% at 0% 100%, rgba(6, 182, 212, 0.08), transparent);
+  background-attachment: fixed;
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl p-6 border border-slate-700/60 bg-slate-900/40 backdrop-blur-xl shadow-xl shadow-black/20;
+  }
+  .card-glow {
+    @apply card ring-1 ring-indigo-500/20;
+  }
+  .btn-primary {
+    @apply bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-semibold px-4 py-2 rounded-xl transition-all shadow-lg shadow-indigo-900/40;
+  }
+  .btn-secondary {
+    @apply bg-slate-800/80 hover:bg-slate-700/80 text-slate-200 font-medium px-4 py-2 rounded-xl border border-slate-600/50 transition-all backdrop-blur-sm;
+  }
+  .badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+  }
+  .badge-green { @apply badge bg-emerald-950/60 text-emerald-400 ring-1 ring-emerald-500/30; }
+  .badge-yellow { @apply badge bg-amber-950/60 text-amber-400 ring-1 ring-amber-500/30; }
+  .badge-red { @apply badge bg-rose-950/60 text-rose-400 ring-1 ring-rose-500/30; }
+  .badge-blue { @apply badge bg-sky-950/60 text-sky-400 ring-1 ring-sky-500/30; }
+  .badge-gray { @apply badge bg-slate-800/80 text-slate-400 ring-1 ring-slate-600/40; }
+  .brand-mark {
+    @apply w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 via-violet-500 to-cyan-500 flex items-center justify-center shadow-lg shadow-indigo-500/30 ring-1 ring-white/10;
+  }
+  .header-bar {
+    @apply border-b border-slate-700/50 bg-slate-950/70 backdrop-blur-xl;
+  }
+  .tab-active {
+    @apply border-indigo-400 text-indigo-300;
+  }
+}

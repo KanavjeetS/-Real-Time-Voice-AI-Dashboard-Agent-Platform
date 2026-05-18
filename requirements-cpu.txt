@@ -1,0 +1,49 @@
+# ─────────────────────────────────────────────
+#  AI Calling Agent — CPU Requirements
+#  vLLM and GPU torch are in requirements-gpu.txt
+#  Install this in the default Docker build
+# ─────────────────────────────────────────────
+
+# Web framework
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+websockets==14.1
+python-multipart==0.0.20
+httpx==0.28.1
+
+# Telephony
+twilio==9.4.0
+
+# AI / ML — CPU safe
+groq==0.28.0
+faster-whisper==1.1.1
+kokoro-onnx==0.4.6
+langdetect==1.0.9
+sentence-transformers==3.4.1
+
+# Database
+asyncpg==0.30.0
+sqlalchemy[asyncio]==2.0.36
+alembic==1.14.0
+pgvector==0.3.6
+
+# Cache
+redis[hiredis]==5.2.1
+
+# Config & validation
+pydantic==2.10.4
+pydantic-settings==2.6.1
+python-dotenv==1.0.1
+
+# Logging & observability
+structlog==24.4.0
+prometheus-client==0.21.1
+
+# Utilities
+pypdf==4.3.1
+numpy>=2.0.2
+soundfile==0.12.1
+scipy==1.14.1
+aiofiles==24.1.0
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4

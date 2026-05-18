@@ -1,0 +1,178 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────
+#  AI Calling Agent — Production Docker Compose
+#  Fixes: hardcoded passwords, Redis auth,
+#         port exposure, health-checks,
+#         non-root user, resource limits
+# ─────────────────────────────────────────────
+
+services:
+  # ── PostgreSQL (internal only) ─────────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: vahanai_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: vahanai
+      POSTGRES_USER: vahanai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD env var is required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql:ro
+    # ⚠️ NOT exposed on host — internal network only
+    expose:
+      - "5432"
+    networks:
+      - vahanai_internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vahanai -d vahanai"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ── Redis (internal only, password-protected) ──
+  redis:
+    image: redis:7-alpine
+    container_name: vahanai_redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD env var is required}
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    expose:
+      - "6379"
+    networks:
+      - vahanai_internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── FastAPI Backend ────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: vahanai_api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://vahanai:${POSTGRES_PASSWORD}@postgres:5432/vahanai
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      USE_DATABASE: "true"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - vahanai_internal
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "2.0"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ── Next.js Frontend ───────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: vahanai_frontend
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_WS_URL: ws://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - vahanai_internal
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ── Background worker (Layer 4) ───────────
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: vahanai_worker
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://vahanai:${POSTGRES_PASSWORD}@postgres:5432/vahanai
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      USE_DATABASE: "true"
+    command: ["python", "run_worker.py"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - vahanai_internal
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1.0"
+
+  # ── vLLM (GPU only — opt-in profile) ──────
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: vahanai_vllm
+    restart: unless-stopped
+    profiles:
+      - gpu
+    runtime: nvidia
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HUGGINGFACE_TOKEN:-}
+    command: >
+      --model mistralai/Mistral-Small-3.1-24B-Instruct-2503
+      --host 0.0.0.0
+      --port 8080
+      --dtype float16
+      --max-model-len 32768
+    expose:
+      - "8080"
+    networks:
+      - vahanai_internal
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+networks:
+  vahanai_internal:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:

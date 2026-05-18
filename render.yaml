@@ -1,0 +1,16 @@
+# Alternative to Railway: deploy API as a Docker web service on Render
+services:
+  - type: web
+    name: ai-calling-agent-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: STARTUP_WARM_MODELS
+        value: "true"
+      - key: PORT
+        value: "8000"
+    # Set in Render dashboard: GROQ_API_KEY, TWILIO_*, DATABASE_URL, REDIS_URL,
+    # TWILIO_WEBHOOK_BASE_URL=https://<this-service-host>

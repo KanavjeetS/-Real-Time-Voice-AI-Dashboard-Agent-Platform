@@ -1,0 +1,12 @@
+# ─────────────────────────────────────────────
+#  AI Calling Agent — GPU Requirements
+#  Only install with: pip install -r requirements-gpu.txt
+#  Requires NVIDIA GPU with 16GB+ VRAM
+# ─────────────────────────────────────────────
+
+# Include all CPU deps
+-r requirements-cpu.txt
+
+# GPU-specific — pinned to avoid vLLM/torch conflicts
+vllm==0.6.6
+# vLLM installs its own pinned torch version — do NOT add torch here

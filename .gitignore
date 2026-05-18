@@ -1,0 +1,39 @@
+# Environment secrets — NEVER commit
+.env
+*.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+
+# Node
+node_modules/
+.next/
+out/
+
+# Docker
+postgres_data/
+redis_data/
+
+# Models (large files)
+*.onnx
+*.bin
+*.pt
+*.safetensors
+models/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Logs
+*.log
+logs/

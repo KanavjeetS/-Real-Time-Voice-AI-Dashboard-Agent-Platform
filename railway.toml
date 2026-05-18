@@ -1,0 +1,12 @@
+# Deploy the voice API (FastAPI + WebSockets) on Railway — required for Twilio calls.
+# Dashboard goes on Vercel; see docs/VERCEL_DEPLOY.md
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+restartPolicyType = "ON_FAILURE"
+numReplicas = 1
