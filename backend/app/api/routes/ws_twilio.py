@@ -133,10 +133,9 @@ async def _handle_call(websocket: WebSocket, state: dict):
                 if agent
                 else "Hi, this is Priya from the loans team. How are you?"
             )
-            try:
-                await _generate_and_send_tts(websocket, session, stream_sid, greeting, language="en")
-            except Exception as e:
-                log.error("call.greeting_tts_failed", error=str(e), exc_info=True)
+            asyncio.create_task(
+                _send_greeting(websocket, session, stream_sid, greeting)
+            )
 
         elif event == "media" and session and stream_sid:
             payload = msg.get("media", {}).get("payload", "")
@@ -288,6 +287,18 @@ async def _process_utterance(
         session._processing_turn = False
 
 
+async def _send_greeting(
+    websocket: WebSocket,
+    session: CallSession,
+    stream_sid: Optional[str],
+    greeting: str,
+):
+    try:
+        await _generate_and_send_tts(websocket, session, stream_sid, greeting, language="en")
+    except Exception as e:
+        log.error("call.greeting_tts_failed", error=str(e), exc_info=True)
+
+
 async def _generate_and_send_tts(
     websocket: WebSocket,
     session: CallSession,
@@ -295,13 +306,21 @@ async def _generate_and_send_tts(
     text: str,
     language: str = "en",
 ) -> None:
-    """Synthesize TTS and stream mulaw chunks to Twilio."""
+    """Synthesize TTS and stream mulaw chunks to Twilio at real-time pace (20 ms/chunk)."""
     if not stream_sid:
+        log.warning("tts.skip_no_stream_sid", call_sid=session.call_sid)
         return
     audio_bytes = await TTSService.synthesize(text, language=language)
     if not audio_bytes:
+        log.error("tts.empty_audio", call_sid=session.call_sid, chars=len(text))
         return
 
+    log.info(
+        "tts.streaming",
+        call_sid=session.call_sid,
+        bytes=len(audio_bytes),
+        duration_s=round(len(audio_bytes) / 8000.0, 2),
+    )
     session.tts_playing = True
     for i in range(0, len(audio_bytes), MULAW_CHUNK_BYTES):
         chunk = audio_bytes[i : i + MULAW_CHUNK_BYTES]
@@ -310,6 +329,7 @@ async def _generate_and_send_tts(
             "streamSid": stream_sid,
             "media": {"payload": base64.b64encode(chunk).decode("utf-8")},
         })
+        await asyncio.sleep(0.02)
 
     mulaw_duration_s = len(audio_bytes) / 8000.0
     asyncio.create_task(_reset_tts_flag(session, mulaw_duration_s))

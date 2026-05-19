@@ -144,7 +144,7 @@ class TTSService:
             return b""
 
         latency = int((time.monotonic() - start) * 1000)
-        log.debug("tts.synthesized", language=language, voice=voice, latency_ms=latency, chars=len(text))
+        log.info("tts.synthesized", language=language, voice=voice, latency_ms=latency, bytes=len(audio_bytes))
 
         # Cache short phrases
         if len(text) < 200:

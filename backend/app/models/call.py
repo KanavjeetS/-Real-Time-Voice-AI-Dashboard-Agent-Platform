@@ -38,10 +38,6 @@ class Lead(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    calls: Mapped[list["Call"]] = relationship("Call", back_populates="lead")
-
-
-class Call(Base):
     __tablename__ = "calls"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -64,7 +60,6 @@ class Call(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     agent: Mapped["Agent | None"] = relationship("Agent", back_populates="calls")
-    lead: Mapped["Lead | None"] = relationship("Lead", back_populates="calls")
     turns: Mapped[list["CallTurn"]] = relationship("CallTurn", back_populates="call", cascade="all, delete-orphan")
 
 
