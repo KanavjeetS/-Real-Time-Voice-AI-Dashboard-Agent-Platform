@@ -1,16 +1,57 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import {
-  Phone, PhoneCall, PhoneOff, BarChart2, Users, Activity,
-  Settings, RefreshCw, Mic, Globe, AlertCircle, CheckCircle,
-  Clock, TrendingUp, Zap
+  Phone,
+  History,
+  BarChart3,
+  Users,
+  Settings,
+  Activity,
+  Mic,
+  RefreshCcw,
+  Plus,
+  Cpu,
+  Database,
+  ShieldCheck,
+  Globe,
+  AlertCircle,
+  CheckCircle,
+  Clock,
+  Loader2,
+  Monitor,
 } from "lucide-react";
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell,
+} from "recharts";
+import { cn } from "@/lib/utils";
+import { StatCard } from "@/components/dashboard/StatCard";
+import { TabButton } from "@/components/dashboard/TabButton";
+import { SplashScreen } from "@/components/dashboard/SplashScreen";
+import { VoiceOrb } from "@/components/VoiceOrb";
+
+type TabId = "dial" | "calls" | "analytics" | "agents" | "system";
+
+const TABS: { id: TabId; label: string; icon: typeof Phone }[] = [
+  { id: "dial", label: "Dial", icon: Plus },
+  { id: "calls", label: "Call Log", icon: History },
+  { id: "analytics", label: "Analytics", icon: BarChart3 },
+  { id: "agents", label: "Agents", icon: Users },
+  { id: "system", label: "System", icon: Settings },
+];
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-// ── Types ──────────────────────────────────────
 interface Agent {
   id: string;
   name: string;
@@ -53,6 +94,7 @@ interface Stats {
 
 interface HealthInfo {
   status: string;
+  env?: string;
   db_enabled?: boolean;
   db_connected?: boolean;
   db_crm_ready?: boolean;
@@ -60,44 +102,35 @@ interface HealthInfo {
   twilio_configured?: boolean;
 }
 
+const intentColors: Record<string, string> = {
+  interested: "#34d399",
+  high_ticket: "#f59e0b",
+  confused: "#fbbf24",
+  angry: "#ef4444",
+  callback: "#818cf8",
+  not_interested: "#71717a",
+  neutral: "#6366f1",
+  spam_invalid: "#dc2626",
+};
+
 function formatApiError(detail: unknown): string {
   if (typeof detail === "string") return detail;
   if (Array.isArray(detail)) {
-    return detail.map((d) => (typeof d === "object" && d && "msg" in d ? String((d as { msg: string }).msg) : String(d))).join("; ");
+    return detail
+      .map((d) =>
+        typeof d === "object" && d && "msg" in d ? String((d as { msg: string }).msg) : String(d)
+      )
+      .join("; ");
   }
   return "Request failed.";
 }
 
-// ── Helpers ────────────────────────────────────
-const intentColors: Record<string, string> = {
-  interested: "#22c55e",
-  high_ticket: "#f59e0b",
-  confused: "#60a5fa",
-  angry: "#ef4444",
-  callback: "#a78bfa",
-  not_interested: "#6b7280",
-  neutral: "#374151",
-  spam_invalid: "#dc2626",
-};
-
-const statusBadge = (status: string) => {
-  const map: Record<string, string> = {
-    completed: "badge-green",
-    "in-progress": "badge-blue",
-    initiated: "badge-yellow",
-    failed: "badge-red",
-    "no-answer": "badge-gray",
-  };
-  return map[status] || "badge-gray";
-};
-
 const fmtDuration = (s: number) => {
   const m = Math.floor(s / 60);
   const sec = s % 60;
-  return `${m}:${String(sec).padStart(2, "0")}`;
+  return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
 };
 
-/** Preview E.164 for India (matches backend DEFAULT_PHONE_REGION=IN). */
 function previewE164(raw: string): string | null {
   const s = raw.trim();
   if (!s) return null;
@@ -110,7 +143,26 @@ function previewE164(raw: string): string | null {
   return null;
 }
 
-// ── Main Page ──────────────────────────────────
+const containerVariants = {
+  hidden: { opacity: 0 },
+  visible: {
+    opacity: 1,
+    transition: { staggerChildren: 0.08, delayChildren: 0.15 },
+  },
+};
+
+const itemVariants = {
+  hidden: { opacity: 0, y: 16 },
+  visible: { opacity: 1, y: 0, transition: { duration: 0.45, ease: "easeOut" } },
+};
+
+const chartTooltipStyle = {
+  backgroundColor: "#18181b",
+  border: "1px solid rgba(255,255,255,0.1)",
+  borderRadius: 8,
+  fontSize: 12,
+};
+
 export default function Dashboard() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
@@ -118,15 +170,14 @@ export default function Dashboard() {
   const [phoneNumber, setPhoneNumber] = useState("");
   const [calling, setCalling] = useState(false);
   const [callResult, setCallResult] = useState<{ success: boolean; message: string } | null>(null);
-  const [activeTab, setActiveTab] = useState<"dial" | "calls" | "analytics" | "agents" | "system">("dial");
-  const [loading, setLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState<TabId>("dial");
+  const [splash, setSplash] = useState(true);
   const [healthStatus, setHealthStatus] = useState<"ok" | "error" | "checking">("checking");
   const [healthInfo, setHealthInfo] = useState<HealthInfo | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [diagLoading, setDiagLoading] = useState(false);
   const [diagResults, setDiagResults] = useState<Record<string, unknown> | null>(null);
 
-  // ── Data fetching ──────────────────────────
   const fetchAgents = useCallback(async () => {
     try {
       const res = await fetch(`${API}/api/v1/agents`);
@@ -137,9 +188,7 @@ export default function Dashboard() {
       const data = await res.json();
       const list: Agent[] = data.agents || [];
       setAgents(list);
-      if (list.length > 0) {
-        setSelectedAgent((prev) => prev || list[0].id);
-      }
+      if (list.length > 0) setSelectedAgent((prev) => prev || list[0].id);
     } catch (e: unknown) {
       setFetchError(e instanceof Error ? e.message : "Failed to load agents");
     }
@@ -157,11 +206,11 @@ export default function Dashboard() {
       if (data._warning) {
         setFetchError(
           data._warning.includes("relation") || data._warning.includes("Stats unavailable")
-            ? "CRM tables not set up — calls still work. Use Docker Postgres for call history, or run init_db.sql."
+            ? "CRM tables not set up — calls still work. Run init_db or use Docker Postgres for history."
             : data._warning
         );
       } else {
-        setFetchError(null);
+        setFetchError((prev) => (prev?.includes("Agents API") ? prev : null));
       }
     } catch (e: unknown) {
       setFetchError(e instanceof Error ? e.message : "Failed to load stats");
@@ -186,6 +235,12 @@ export default function Dashboard() {
     }
   }, []);
 
+  const syncAll = () => {
+    void checkHealth();
+    void fetchAgents();
+    void fetchStats();
+  };
+
   const runDiagnostics = async () => {
     setDiagLoading(true);
     setDiagResults(null);
@@ -205,17 +260,19 @@ export default function Dashboard() {
   };
 
   useEffect(() => {
-    setLoading(true);
-    Promise.all([checkHealth(), fetchAgents(), fetchStats()]).finally(() => setLoading(false));
+    const boot = async () => {
+      await Promise.all([checkHealth(), fetchAgents(), fetchStats()]);
+      setTimeout(() => setSplash(false), 900);
+    };
+    void boot();
     const statsInterval = setInterval(fetchStats, 15000);
     const healthInterval = setInterval(checkHealth, 30000);
     return () => {
       clearInterval(statsInterval);
       clearInterval(healthInterval);
     };
-  }, [fetchAgents, fetchStats, checkHealth]);
+  }, [checkHealth, fetchAgents, fetchStats]);
 
-  // ── Initiate Call ──────────────────────────
   const initiateCall = async () => {
     if (!phoneNumber.trim()) {
       setCallResult({ success: false, message: "Enter a phone number first." });
@@ -240,437 +297,817 @@ export default function Dashboard() {
         });
         setTimeout(fetchStats, 3000);
       } else {
-        setCallResult({ success: false, message: formatApiError(data.detail) || "Failed to initiate call." });
+        setCallResult({
+          success: false,
+          message: formatApiError(data.detail) || "Failed to initiate call.",
+        });
       }
-    } catch (e: any) {
-      setCallResult({ success: false, message: `Network error: ${e.message}` });
+    } catch (e: unknown) {
+      setCallResult({
+        success: false,
+        message: `Network error: ${e instanceof Error ? e.message : "unknown"}`,
+      });
     } finally {
       setCalling(false);
     }
   };
 
-  // ── Intent chart data ──────────────────────
   const intentChartData = stats
     ? Object.entries(stats.intent_breakdown).map(([name, value]) => ({
-        name,
+        name: name.replace(/_/g, " "),
         value,
-        fill: intentColors[name] || "#6b7280",
+        color: intentColors[name] || "#6b7280",
       }))
     : [];
 
+  const latencyChartData =
+    stats?.latency?.recent?.map((row, i) => ({
+      turn: `T${i + 1}`,
+      stt: row.stt_ms ?? row.stt ?? 0,
+      llm: row.llm_ms ?? row.llm ?? 0,
+      tts: row.tts_ms ?? row.tts ?? 0,
+    })) ?? [];
+
+  const isLive = calling || (stats?.active_calls ?? 0) > 0;
+  const e164 = previewE164(phoneNumber);
+
+  const providers = [
+    { name: "Groq AI", ok: healthInfo?.groq_configured },
+    { name: "Twilio", ok: healthInfo?.twilio_configured },
+    { name: "PostgreSQL", ok: healthInfo?.db_connected },
+    { name: "CRM Tables", ok: healthInfo?.db_crm_ready },
+  ];
+
   return (
-    <div className="min-h-screen flex flex-col">
-      {/* ── Header ── */}
-      <header className="header-bar px-6 py-4 flex items-center justify-between sticky top-0 z-50">
-        <div className="flex items-center gap-3">
-          <div className="brand-mark">
-            <Mic size={18} className="text-white" />
-          </div>
-          <div>
-            <h1 className="font-bold text-xl tracking-tight bg-gradient-to-r from-white via-indigo-100 to-violet-200 bg-clip-text text-transparent">
-              AI Calling Agent
-            </h1>
-            <p className="text-xs text-slate-400">Enterprise voice AI · live calls & analytics</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-3">
-          {/* Health indicator */}
-          <div className="flex items-center gap-2 text-sm">
-            {healthStatus === "ok" && (
-              <>
-                <CheckCircle size={14} className="text-green-400" />
-                <span className="text-green-400">
-                  Online
-                  {healthInfo && (
-                    <span className="text-gray-500 text-xs ml-2">
-                      {healthInfo.groq_configured ? "Groq ✓" : "Groq ✗"}
-                      {" · "}
-                      {healthInfo.db_crm_ready
-                        ? "CRM ✓"
-                        : healthInfo.db_connected
-                          ? "CRM pending"
-                          : healthInfo.db_enabled
-                            ? "DB ✗"
-                            : "DB off"}
-                    </span>
-                  )}
-                </span>
-              </>
-            )}
-            {healthStatus === "error" && (
-              <><AlertCircle size={14} className="text-red-400" /><span className="text-red-400">Backend Offline</span></>
-            )}
-            {healthStatus === "checking" && (
-              <><RefreshCw size={14} className="text-yellow-400 animate-spin" /><span className="text-yellow-400">Checking...</span></>
-            )}
-          </div>
-          <button onClick={() => { fetchStats(); fetchAgents(); checkHealth(); }} className="btn-secondary flex items-center gap-2 text-sm">
-            <RefreshCw size={14} />
-            Refresh
-          </button>
-        </div>
-      </header>
+    <>
+      <AnimatePresence>{splash && <SplashScreen />}</AnimatePresence>
 
-      {fetchError && (
-        <div className="mx-6 mt-2 flex items-start gap-2 p-3 rounded-lg border border-amber-800 bg-amber-950/30 text-amber-300 text-sm">
-          <AlertCircle size={16} className="shrink-0 mt-0.5" />
-          <span>{fetchError}</span>
-        </div>
-      )}
+      <motion.div
+        className="min-h-screen selection:bg-indigo-500/30"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: splash ? 0 : 1 }}
+        transition={{ duration: 0.5 }}
+      >
+        <motion.div
+          className="bg-aurora"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 1.2 }}
+        >
+          <motion.div
+            className="aurora-blur -left-20 -top-20 bg-indigo-500/10"
+            animate={{ x: [0, 30, 0], y: [0, 20, 0] }}
+            transition={{ duration: 18, repeat: Infinity, ease: "easeInOut" }}
+          />
+          <motion.div
+            className="aurora-blur -right-40 top-1/2 bg-purple-500/5"
+            animate={{ x: [0, -25, 0], y: [0, -15, 0] }}
+            transition={{ duration: 22, repeat: Infinity, ease: "easeInOut" }}
+          />
+          <motion.div
+            className="aurora-blur -bottom-20 left-1/3 bg-cyan-500/5"
+            animate={{ x: [0, 20, 0], y: [0, -25, 0] }}
+            transition={{ duration: 20, repeat: Infinity, ease: "easeInOut" }}
+          />
+        </motion.div>
 
-      {/* ── Stats Row ── */}
-      <div className="px-6 py-4 grid grid-cols-4 gap-4">
-        {[
-          { label: "Calls Today", value: stats?.total_calls_today ?? "—", icon: Phone, color: "text-blue-400" },
-          { label: "Active Now", value: stats?.active_calls ?? 0, icon: Activity, color: "text-green-400" },
-          { label: "Avg Duration", value: stats ? fmtDuration(Math.round(stats.avg_duration_seconds)) : "—", icon: Clock, color: "text-yellow-400" },
-          { label: "Agents", value: agents.length, icon: Users, color: "text-purple-400" },
-        ].map((s) => (
-          <div key={s.label} className="card flex items-center gap-4">
-            <s.icon size={24} className={s.color} />
-            <div>
-              <div className="text-2xl font-bold text-white">{s.value}</div>
-              <div className="text-xs text-gray-500">{s.label}</div>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* ── Tab Nav ── */}
-      <div className="px-6">
-        <div className="flex gap-1 border-b border-gray-800">
-          {(["dial", "calls", "analytics", "agents", "system"] as const).map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`px-4 py-2 text-sm font-medium capitalize transition-colors border-b-2 -mb-px ${
-                activeTab === tab
-                  ? "tab-active"
-                  : "border-transparent text-slate-500 hover:text-slate-300"
-              }`}
+        <motion.header
+          initial={{ y: -64, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          transition={{ duration: 0.55, ease: "circOut" }}
+          className="fixed top-0 z-50 flex h-16 w-full items-center justify-between border-b border-white/10 bg-black/40 px-4 backdrop-blur-md sm:px-6"
+        >
+          <div className="flex items-center gap-3">
+            <motion.div
+              className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-600 shadow-lg shadow-indigo-500/20"
+              whileHover={{ scale: 1.05, rotate: 3 }}
+              whileTap={{ scale: 0.98 }}
             >
-              {tab === "dial"
-                ? "📞 Dial"
-                : tab === "calls"
-                  ? "📋 Call Log"
-                  : tab === "analytics"
-                    ? "📊 Analytics"
-                    : tab === "agents"
-                      ? "🤖 Agents"
-                      : "⚙️ System"}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* ── Tab Content ── */}
-      <main className="flex-1 px-6 py-6">
-
-        {/* DIAL TAB */}
-        {activeTab === "dial" && (
-          <div className="max-w-lg mx-auto space-y-6">
-            <div className="card space-y-6">
-              <div>
-                <h2 className="text-xl font-bold text-white mb-1">Initiate Call</h2>
-                <p className="text-sm text-gray-500">Enter a number and select an agent to start an AI-powered call.</p>
-              </div>
-
-              {/* Phone Input */}
-              <div>
-                <label className="block text-sm font-medium text-gray-400 mb-2">Phone Number</label>
-                <div className="flex gap-2">
-                  <input
-                    type="tel"
-                    value={phoneNumber}
-                    onChange={(e) => setPhoneNumber(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && initiateCall()}
-                    placeholder="8076029575 or +918076029575"
-                    className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono text-lg"
-                  />
-                </div>
-                {previewE164(phoneNumber) && !phoneNumber.trim().startsWith("+") && (
-                  <p className="text-xs text-indigo-400 mt-1">Will dial: {previewE164(phoneNumber)}</p>
-                )}
-                <p className="text-xs text-amber-400/90 mt-1">
-                  Twilio trial: the number you dial must match a verified number in Twilio Console exactly (check every digit).
-                </p>
-                <p className="text-xs text-gray-600 mt-0.5">
-                  10-digit mobiles are formatted as +91 automatically (e.g. 9076029575 → +919076029575).
-                </p>
-              </div>
-
-              {/* Agent Select */}
-              <div>
-                <label className="block text-sm font-medium text-gray-400 mb-2">AI Agent</label>
-                {agents.length === 0 ? (
-                  <div className="bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-gray-500 text-sm">
-                    No agents configured. Check your database connection.
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    {agents.map((agent) => (
-                      <div
-                        key={agent.id}
-                        onClick={() => setSelectedAgent(agent.id)}
-                        className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
-                          selectedAgent === agent.id
-                            ? "border-indigo-500 bg-indigo-950/30"
-                            : "border-gray-700 bg-gray-800 hover:border-gray-600"
-                        }`}
-                      >
-                        <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold ${
-                          selectedAgent === agent.id ? "bg-indigo-600" : "bg-gray-700"
-                        }`}>
-                          {agent.name.charAt(0)}
-                        </div>
-                        <div className="flex-1">
-                          <div className="font-medium text-white text-sm">{agent.name}</div>
-                          {agent.description && <div className="text-xs text-gray-500 truncate">{agent.description}</div>}
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <Globe size={12} className="text-gray-500" />
-                          <span className="text-xs text-gray-500">{agent.language_mode}</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* Call Button */}
-              <button
-                onClick={initiateCall}
-                disabled={calling || !phoneNumber}
-                className={`w-full py-4 rounded-xl font-bold text-lg flex items-center justify-center gap-3 transition-all ${
-                  calling || !phoneNumber
-                    ? "bg-gray-800 text-gray-600 cursor-not-allowed"
-                    : "bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-900/50"
-                }`}
-              >
-                {calling ? (
-                  <><RefreshCw size={20} className="animate-spin" /> Initiating Call...</>
-                ) : (
-                  <><PhoneCall size={20} /> Call Now</>
-                )}
-              </button>
-
-              {/* Result */}
-              {callResult && (
-                <div className={`flex items-start gap-3 p-4 rounded-lg border ${
-                  callResult.success
-                    ? "bg-green-950/30 border-green-800 text-green-400"
-                    : "bg-red-950/30 border-red-800 text-red-400"
-                }`}>
-                  {callResult.success ? <CheckCircle size={16} className="mt-0.5 shrink-0" /> : <AlertCircle size={16} className="mt-0.5 shrink-0" />}
-                  <span className="text-sm">{callResult.message}</span>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* CALLS TAB */}
-        {activeTab === "calls" && (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-bold text-white">Recent Calls</h2>
-              <span className="text-sm text-gray-500">{stats?.recent_calls.length ?? 0} records</span>
-            </div>
-            <div className="card overflow-hidden p-0">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-gray-800">
-                    <th className="px-4 py-3 text-left text-xs text-gray-500 font-medium">Phone</th>
-                    <th className="px-4 py-3 text-left text-xs text-gray-500 font-medium">Status</th>
-                    <th className="px-4 py-3 text-left text-xs text-gray-500 font-medium">Intent</th>
-                    <th className="px-4 py-3 text-left text-xs text-gray-500 font-medium">Duration</th>
-                    <th className="px-4 py-3 text-left text-xs text-gray-500 font-medium">Language</th>
-                    <th className="px-4 py-3 text-left text-xs text-gray-500 font-medium">Time</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(stats?.recent_calls || []).length === 0 ? (
-                    <tr>
-                      <td colSpan={6} className="px-4 py-8 text-center text-gray-600">
-                        No calls yet. Use the Dial tab to make your first call.
-                      </td>
-                    </tr>
-                  ) : (
-                    (stats?.recent_calls || []).map((call) => (
-                      <tr key={call.id} className="border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors">
-                        <td className="px-4 py-3 font-mono text-white">{call.phone}</td>
-                        <td className="px-4 py-3"><span className={statusBadge(call.status)}>{call.status}</span></td>
-                        <td className="px-4 py-3">
-                          {call.intent && (
-                            <span
-                              className="badge text-xs"
-                              style={{
-                                backgroundColor: (intentColors[call.intent] || "#374151") + "33",
-                                color: intentColors[call.intent] || "#9ca3af",
-                              }}
-                            >
-                              {call.intent}
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 text-gray-400 font-mono">{fmtDuration(call.duration_s)}</td>
-                        <td className="px-4 py-3">
-                          <span className="badge bg-gray-800 text-gray-400">{call.language === "hi" ? "🇮🇳 Hindi" : "🇺🇸 English"}</span>
-                        </td>
-                        <td className="px-4 py-3 text-gray-500 text-xs">
-                          {call.created_at ? new Date(call.created_at).toLocaleString() : "—"}
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        {/* ANALYTICS TAB */}
-        {activeTab === "analytics" && (
-          <div className="space-y-6">
-            <h2 className="text-lg font-bold text-white">Analytics</h2>
-            <div className="grid grid-cols-2 gap-6">
-              {/* Intent Breakdown Bar */}
-              <div className="card">
-                <h3 className="text-sm font-semibold text-gray-400 mb-4">Intent Breakdown</h3>
-                {intentChartData.length === 0 ? (
-                  <div className="h-48 flex items-center justify-center text-gray-600 text-sm">No data yet</div>
-                ) : (
-                  <ResponsiveContainer width="100%" height={200}>
-                    <BarChart data={intentChartData}>
-                      <XAxis dataKey="name" tick={{ fill: "#6b7280", fontSize: 11 }} />
-                      <YAxis tick={{ fill: "#6b7280", fontSize: 11 }} />
-                      <Tooltip
-                        contentStyle={{ background: "#111827", border: "1px solid #374151", borderRadius: 8 }}
-                        labelStyle={{ color: "#f3f4f6" }}
-                      />
-                      <Bar dataKey="value">
-                        {intentChartData.map((entry, index) => (
-                          <Cell key={index} fill={entry.fill} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                )}
-              </div>
-
-              {/* Intent Pie */}
-              <div className="card">
-                <h3 className="text-sm font-semibold text-gray-400 mb-4">Intent Distribution</h3>
-                {intentChartData.length === 0 ? (
-                  <div className="h-48 flex items-center justify-center text-gray-600 text-sm">No data yet</div>
-                ) : (
-                  <ResponsiveContainer width="100%" height={200}>
-                    <PieChart>
-                      <Pie data={intentChartData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80}>
-                        {intentChartData.map((entry, index) => (
-                          <Cell key={index} fill={entry.fill} />
-                        ))}
-                      </Pie>
-                      <Tooltip
-                        contentStyle={{ background: "#111827", border: "1px solid #374151", borderRadius: 8 }}
-                      />
-                    </PieChart>
-                  </ResponsiveContainer>
-                )}
-              </div>
-            </div>
-
-            {/* Intent legend */}
-            <div className="card">
-              <h3 className="text-sm font-semibold text-gray-400 mb-4">Intent Reference</h3>
-              <div className="grid grid-cols-3 gap-3">
-                {Object.entries(intentColors).map(([intent, color]) => (
-                  <div key={intent} className="flex items-center gap-2">
-                    <div className="w-3 h-3 rounded-full" style={{ backgroundColor: color }} />
-                    <span className="text-sm text-gray-400 capitalize">{intent.replace("_", " ")}</span>
-                    <span className="text-xs text-gray-600 ml-auto">
-                      {stats?.intent_breakdown[intent] ?? 0}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* SYSTEM TAB */}
-        {activeTab === "system" && (
-          <div className="max-w-3xl mx-auto space-y-6">
-            <div className="card space-y-3">
-              <h2 className="text-lg font-bold text-white">4-Layer Architecture</h2>
-              <ul className="text-sm text-gray-400 space-y-1 list-disc pl-5">
-                <li>Layer 1: Voice Core (Twilio, STT/TTS, barge-in)</li>
-                <li>Layer 2: Agentic Intelligence (state machine, memory, objections)</li>
-                <li>Layer 3: Enterprise (CRM, lead scoring, summaries)</li>
-                <li>Layer 4: Scalability (Redis workers, Prometheus)</li>
-              </ul>
-            </div>
-            <div className="card space-y-4">
-              <h2 className="text-lg font-bold text-white">System Diagnostics</h2>
-              <p className="text-sm text-gray-500">
-                Verify Groq LLM/STT, Twilio, database, and conversation engine.
+              <Mic className="h-6 w-6 text-white" />
+            </motion.div>
+            <motion.div initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.1 }}>
+              <h1 className="text-lg font-bold leading-none tracking-tight text-white">AI Calling Agent</h1>
+              <p className="mt-1 text-[10px] font-bold uppercase tracking-widest text-indigo-400">
+                Voice AI Platform
               </p>
-              <button
-                onClick={runDiagnostics}
-                disabled={diagLoading}
-                className="btn-secondary flex items-center gap-2 text-sm w-fit"
-              >
-                <RefreshCw size={14} className={diagLoading ? "animate-spin" : ""} />
-                {diagLoading ? "Running tests..." : "Run diagnostics"}
-              </button>
-              {diagResults && (
-                <pre className="text-xs bg-gray-900 border border-gray-800 rounded-lg p-4 overflow-auto max-h-96 text-gray-300">
-                  {JSON.stringify(diagResults, null, 2)}
-                </pre>
-              )}
-            </div>
+            </motion.div>
           </div>
-        )}
 
-        {/* AGENTS TAB */}
-        {activeTab === "agents" && (
-          <div className="space-y-4">
-            <h2 className="text-lg font-bold text-white">Configured Agents</h2>
-            {agents.length === 0 ? (
-              <div className="card text-center py-12 text-gray-600">
-                No agents found. Ensure your database is running and initialized.
+          <div className="flex items-center gap-2 sm:gap-4">
+            <div className="hidden items-center gap-3 glass-pill md:flex">
+              <div className="flex items-center gap-1.5 border-r border-white/10 pr-3">
+                <motion.div
+                  className={cn(
+                    "h-1.5 w-1.5 rounded-full",
+                    healthStatus === "ok" ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.6)]" : "bg-rose-400"
+                  )}
+                  animate={healthStatus === "ok" ? { scale: [1, 1.2, 1] } : {}}
+                  transition={{ duration: 2, repeat: Infinity }}
+                />
+                <span
+                  className={cn(
+                    "text-[10px] font-bold uppercase",
+                    healthStatus === "ok" ? "text-emerald-400" : "text-rose-400"
+                  )}
+                >
+                  {healthStatus === "checking" ? "Syncing" : healthStatus === "ok" ? "Live" : "Offline"}
+                </span>
               </div>
-            ) : (
-              <div className="grid gap-4">
-                {agents.map((agent) => (
-                  <div key={agent.id} className="card space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 bg-indigo-600 rounded-full flex items-center justify-center font-bold text-white">
-                          {agent.name.charAt(0)}
+              <span className="flex items-center gap-1 text-[10px] font-bold uppercase text-zinc-400">
+                Groq{" "}
+                <ShieldCheck
+                  className={cn("h-3 w-3", healthInfo?.groq_configured ? "text-emerald-500" : "text-zinc-600")}
+                />
+              </span>
+              <span className="flex items-center gap-1 text-[10px] font-bold uppercase text-zinc-400">
+                CRM{" "}
+                <ShieldCheck
+                  className={cn("h-3 w-3", healthInfo?.db_crm_ready ? "text-emerald-500" : "text-amber-500")}
+                />
+              </span>
+              <span className="flex items-center gap-1 text-[10px] font-bold uppercase text-zinc-400">
+                Twilio{" "}
+                <ShieldCheck
+                  className={cn("h-3 w-3", healthInfo?.twilio_configured ? "text-emerald-500" : "text-zinc-600")}
+                />
+              </span>
+            </div>
+            <motion.button
+              type="button"
+              onClick={syncAll}
+              className="p-2 text-zinc-400 transition-colors hover:text-white"
+              whileHover={{ rotate: 180 }}
+              transition={{ duration: 0.4 }}
+            >
+              <RefreshCcw className={cn("h-4 w-4", healthStatus === "checking" && "animate-spin")} />
+            </motion.button>
+          </div>
+        </motion.header>
+
+        <motion.main
+          variants={containerVariants}
+          initial="hidden"
+          animate="visible"
+          className="mx-auto max-w-7xl space-y-8 px-4 pb-16 pt-24 sm:px-6"
+        >
+          {fetchError && (
+            <motion.div
+              variants={itemVariants}
+              className="flex items-start gap-3 rounded-xl border border-amber-500/20 bg-amber-500/10 p-4 text-sm text-amber-200"
+            >
+              <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
+              <span>{fetchError}</span>
+            </motion.div>
+          )}
+
+          <motion.section variants={itemVariants} className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <StatCard
+              icon={Phone}
+              label="Calls Today"
+              value={stats?.total_calls_today ?? "—"}
+              sublabel="Daily outbound volume"
+            />
+            <StatCard
+              icon={Activity}
+              label="Active Now"
+              value={stats?.active_calls ?? 0}
+              sublabel="Live interactions"
+              active={(stats?.active_calls ?? 0) > 0}
+            />
+            <StatCard
+              icon={Clock}
+              label="Avg Duration"
+              value={stats ? fmtDuration(Math.round(stats.avg_duration_seconds)) : "—"}
+              sublabel="Per completed call"
+            />
+            <StatCard icon={Users} label="Voice Agents" value={agents.length} sublabel="Configured profiles" />
+          </motion.section>
+
+          <motion.nav
+            variants={itemVariants}
+            className="no-scrollbar flex overflow-x-auto border-b border-white/10"
+          >
+            {TABS.map((tab) => (
+              <TabButton
+                key={tab.id}
+                id={tab.id}
+                label={tab.label}
+                icon={tab.icon}
+                active={activeTab === tab.id}
+                onClick={(id) => setActiveTab(id as TabId)}
+              />
+            ))}
+          </motion.nav>
+
+          <motion.div variants={itemVariants} className="relative min-h-[480px]">
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={activeTab}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -12 }}
+                transition={{ duration: 0.28, ease: "easeOut" }}
+              >
+                {activeTab === "dial" && (
+                  <div className="mx-auto flex max-w-2xl flex-col items-center space-y-8 py-6">
+                    <motion.div
+                      initial={{ scale: 0.9, opacity: 0 }}
+                      animate={{ scale: 1, opacity: 1 }}
+                      transition={{ type: "spring", stiffness: 200, damping: 20 }}
+                    >
+                      <VoiceOrb active={isLive} size="lg" />
+                    </motion.div>
+                    <p className="max-w-md text-center text-sm text-zinc-500">
+                      Start an outbound AI voice call with real-time speech, intent tracking, and bilingual EN/HI
+                      support.
+                    </p>
+
+                    <div className="glass-panel relative w-full space-y-8 overflow-hidden p-8">
+                      <Phone className="absolute right-4 top-4 h-24 w-24 opacity-[0.06]" />
+                      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.1 }}>
+                        <h2 className="text-2xl font-bold text-white">Initiate Call</h2>
+                        <p className="text-sm text-zinc-400">Select an agent and enter the customer number.</p>
+                      </motion.div>
+
+                      <motion.div className="space-y-4" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+                        <div className="space-y-2">
+                          <label className="text-xs font-bold uppercase tracking-widest text-zinc-500">
+                            Phone Number
+                          </label>
+                          <motion.div className="relative" whileFocus={{ scale: 1.01 }}>
+                            <input
+                              type="tel"
+                              value={phoneNumber}
+                              onChange={(e) => setPhoneNumber(e.target.value)}
+                              onKeyDown={(e) => e.key === "Enter" && initiateCall()}
+                              placeholder="+91 00000 00000"
+                              className="glass-input pr-12"
+                            />
+                            <Globe className="absolute right-4 top-1/2 h-5 w-5 -translate-y-1/2 text-zinc-600" />
+                          </motion.div>
+                          <p className="font-mono text-[10px] text-zinc-500">
+                            E.164 preview:{" "}
+                            <span className="text-indigo-400">{e164 || "+91…"}</span>
+                          </p>
                         </div>
-                        <div>
-                          <div className="font-semibold text-white">{agent.name}</div>
-                          <div className="text-xs text-gray-500">{agent.id}</div>
+
+                        <div className="flex gap-3 rounded-xl border border-amber-500/20 bg-amber-500/10 p-4">
+                          <AlertCircle className="h-5 w-5 shrink-0 text-amber-500" />
+                          <motion.div
+                            className="space-y-1"
+                            animate={{ opacity: [0.85, 1, 0.85] }}
+                            transition={{ duration: 3, repeat: Infinity }}
+                          >
+                            <p className="text-xs font-bold uppercase tracking-wide text-amber-500">
+                              Twilio trial notice
+                            </p>
+                            <p className="text-[11px] text-amber-500/80">
+                              Only verified numbers can receive calls in trial mode. 10-digit mobiles auto-format as
+                              +91.
+                            </p>
+                          </motion.div>
                         </div>
+
+                        <motion.div className="space-y-3" layout>
+                          <label className="text-xs font-bold uppercase tracking-widest text-zinc-500">
+                            Select Agent Profile
+                          </label>
+                          {agents.length === 0 ? (
+                            <p className="text-sm text-zinc-500">No agents loaded. Check API and database.</p>
+                          ) : (
+                            <motion.div className="grid grid-cols-1 gap-3 md:grid-cols-2" layout>
+                              {agents.map((agent) => (
+                                <motion.button
+                                  key={agent.id}
+                                  type="button"
+                                  layout
+                                  onClick={() => setSelectedAgent(agent.id)}
+                                  whileHover={{ scale: 1.02 }}
+                                  whileTap={{ scale: 0.98 }}
+                                  className={cn(
+                                    "glass-panel flex items-center gap-3 p-4 text-left transition-colors",
+                                    selectedAgent === agent.id && "border-indigo-500/50 ring-1 ring-indigo-500/30"
+                                  )}
+                                >
+                                  <div
+                                    className={cn(
+                                      "flex h-10 w-10 items-center justify-center rounded-full font-bold transition-all",
+                                      selectedAgent === agent.id
+                                        ? "bg-indigo-500 text-white"
+                                        : "bg-indigo-500/20 text-indigo-400"
+                                    )}
+                                  >
+                                    {agent.name.charAt(0)}
+                                  </div>
+                                  <motion.div className="min-w-0 grow">
+                                    <span className="block text-sm font-bold text-white">{agent.name}</span>
+                                    <span className="block truncate text-[10px] uppercase tracking-wide text-zinc-500">
+                                      {agent.description || agent.language_mode}
+                                    </span>
+                                  </motion.div>
+                                  <span className="badge-pill bg-indigo-500/20 text-indigo-400">
+                                    {agent.language_mode}
+                                  </span>
+                                </motion.button>
+                              ))}
+                            </motion.div>
+                          )}
+                        </motion.div>
+
+                        <motion.button
+                          type="button"
+                          onClick={initiateCall}
+                          disabled={calling || !phoneNumber.trim()}
+                          whileHover={!calling && phoneNumber.trim() ? { scale: 1.02 } : {}}
+                          whileTap={!calling && phoneNumber.trim() ? { scale: 0.98 } : {}}
+                          className={cn(
+                            "flex w-full items-center justify-center gap-3 rounded-xl py-4 font-bold transition-all",
+                            calling || !phoneNumber.trim()
+                              ? "cursor-not-allowed bg-zinc-800 text-zinc-500"
+                              : "bg-indigo-600 text-white shadow-lg shadow-indigo-500/30 hover:bg-indigo-500"
+                          )}
+                        >
+                          {calling ? (
+                            <>
+                              <Loader2 className="h-5 w-5 animate-spin" />
+                              Connecting to Twilio…
+                            </>
+                          ) : (
+                            <>
+                              <Phone className="h-5 w-5" />
+                              Call Now
+                            </>
+                          )}
+                        </motion.button>
+
+                        <AnimatePresence>
+                          {callResult && (
+                            <motion.div
+                              initial={{ opacity: 0, height: 0 }}
+                              animate={{ opacity: 1, height: "auto" }}
+                              exit={{ opacity: 0, height: 0 }}
+                              className={cn(
+                                "flex items-start gap-3 rounded-xl border p-4",
+                                callResult.success
+                                  ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-400"
+                                  : "border-rose-500/20 bg-rose-500/10 text-rose-400"
+                              )}
+                            >
+                              {callResult.success ? (
+                                <CheckCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                              ) : (
+                                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                              )}
+                              <span className="text-sm">{callResult.message}</span>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </motion.div>
+                    </div>
+                  </div>
+                )}
+
+                {activeTab === "calls" && (
+                  <div className="space-y-6">
+                    <div className="flex flex-wrap items-center justify-between gap-4">
+                      <div>
+                        <h2 className="text-2xl font-bold text-white">Call Log</h2>
+                        <p className="text-sm text-zinc-400">Recent interactions and AI-detected intents.</p>
                       </div>
-                      <div className="flex gap-2">
-                        <span className="badge badge-blue">EN: {agent.voice_english}</span>
-                        <span className="badge badge-yellow">HI: {agent.voice_hindi}</span>
-                        <span className="badge badge-green">{agent.language_mode}</span>
+                      <button
+                        type="button"
+                        onClick={fetchStats}
+                        className="flex items-center gap-2 glass-pill text-sm font-medium transition-all hover:bg-white/10"
+                      >
+                        <RefreshCcw className="h-4 w-4" />
+                        Sync Logs
+                      </button>
+                    </div>
+                    <div className="glass-panel overflow-hidden">
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left">
+                          <thead className="bg-white/5 text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">
+                            <tr>
+                              <th className="px-6 py-4">Customer</th>
+                              <th className="px-6 py-4">Status</th>
+                              <th className="px-6 py-4">Intent</th>
+                              <th className="px-6 py-4">Duration</th>
+                              <th className="px-6 py-4">Lang</th>
+                              <th className="px-6 py-4">Time</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-white/5">
+                            {(stats?.recent_calls || []).length === 0 ? (
+                              <tr>
+                                <td colSpan={6} className="px-6 py-12 text-center text-zinc-600">
+                                  No calls yet. Use Dial to place your first call.
+                                </td>
+                              </tr>
+                            ) : (
+                              stats?.recent_calls.map((call) => (
+                                <motion.tr
+                                  key={call.id}
+                                  className="cursor-pointer transition-colors hover:bg-white/5"
+                                  whileHover={{ x: 4 }}
+                                >
+                                  <td className="px-6 py-4">
+                                    <span className="font-mono text-sm text-zinc-100">{call.phone}</span>
+                                    {call.call_sid && (
+                                      <span className="mt-0.5 block text-[10px] font-bold uppercase text-zinc-600">
+                                        SID: {call.call_sid.slice(0, 12)}…
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="px-6 py-4">
+                                    <span
+                                      className={cn(
+                                        "badge-pill flex w-fit items-center gap-1",
+                                        call.status === "completed" && "bg-emerald-500/10 text-emerald-400",
+                                        call.status === "in-progress" && "animate-pulse bg-indigo-500/10 text-indigo-400",
+                                        call.status !== "completed" &&
+                                          call.status !== "in-progress" &&
+                                          "bg-rose-500/10 text-rose-400"
+                                      )}
+                                    >
+                                      {call.status}
+                                    </span>
+                                  </td>
+                                  <td className="px-6 py-4">
+                                    {call.intent && (
+                                      <span
+                                        className="rounded border px-2 py-1 text-[10px] font-bold uppercase"
+                                        style={{
+                                          borderColor: (intentColors[call.intent] || "#71717a") + "40",
+                                          color: intentColors[call.intent] || "#a1a1aa",
+                                          backgroundColor: (intentColors[call.intent] || "#71717a") + "15",
+                                        }}
+                                      >
+                                        {call.intent.replace(/_/g, " ")}
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="px-6 py-4 font-mono text-sm text-zinc-400">
+                                    {fmtDuration(call.duration_s)}
+                                  </td>
+                                  <td className="px-6 py-4 text-xs font-bold text-zinc-500">
+                                    {call.language === "hi" ? "HI" : "EN"}
+                                  </td>
+                                  <td className="px-6 py-4 text-xs text-zinc-400">
+                                    {call.created_at ? new Date(call.created_at).toLocaleString() : "—"}
+                                  </td>
+                                </motion.tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
                       </div>
                     </div>
-                    {agent.description && (
-                      <p className="text-sm text-gray-500">{agent.description}</p>
-                    )}
                   </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
+                )}
 
-      </main>
-    </div>
+                {activeTab === "analytics" && (
+                  <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+                    <div className="glass-panel space-y-6 p-6">
+                      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+                        <h3 className="text-lg font-bold text-white">Intent Breakdown</h3>
+                        <p className="mt-1 text-xs uppercase tracking-widest text-zinc-400">AI classification</p>
+                      </motion.div>
+                      <div className="h-[250px] w-full">
+                        {intentChartData.length === 0 ? (
+                          <motion.div
+                            className="flex h-full items-center justify-center text-sm text-zinc-600"
+                            animate={{ opacity: [0.5, 1, 0.5] }}
+                            transition={{ duration: 2, repeat: Infinity }}
+                          >
+                            No intent data yet
+                          </motion.div>
+                        ) : (
+                          <ResponsiveContainer width="100%" height="100%">
+                            <PieChart>
+                              <Pie
+                                data={intentChartData}
+                                innerRadius={60}
+                                outerRadius={80}
+                                paddingAngle={5}
+                                dataKey="value"
+                              >
+                                {intentChartData.map((entry, index) => (
+                                  <Cell key={index} fill={entry.color} />
+                                ))}
+                              </Pie>
+                              <Tooltip contentStyle={chartTooltipStyle} />
+                            </PieChart>
+                          </ResponsiveContainer>
+                        )}
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        {intentChartData.map((item) => (
+                          <motion.div
+                            key={item.name}
+                            className="flex items-center gap-2"
+                            whileHover={{ x: 4 }}
+                          >
+                            <motion.div
+                              className="h-2 w-2 rounded-full"
+                              style={{ backgroundColor: item.color }}
+                              animate={{ scale: [1, 1.2, 1] }}
+                              transition={{ duration: 2, repeat: Infinity, delay: 0.1 }}
+                            />
+                            <span className="text-xs capitalize text-zinc-400">{item.name}</span>
+                            <span className="ml-auto text-xs font-bold text-white">{item.value}</span>
+                          </motion.div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="glass-panel space-y-6 p-6">
+                      <div>
+                        <h3 className="text-lg font-bold text-white">Processing Latency</h3>
+                        <p className="mt-1 text-xs uppercase tracking-widest text-zinc-400">STT · LLM · TTS (ms)</p>
+                      </div>
+                      <motion.div className="h-[250px] w-full" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+                        {latencyChartData.length === 0 ? (
+                          <div className="flex h-full items-center justify-center text-sm text-zinc-600">
+                            Latency samples appear after live calls
+                          </div>
+                        ) : (
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={latencyChartData}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" />
+                              <XAxis dataKey="turn" stroke="#71717a" fontSize={10} />
+                              <YAxis stroke="#71717a" fontSize={10} />
+                              <Tooltip contentStyle={chartTooltipStyle} />
+                              <Bar dataKey="stt" stackId="a" fill="#6366f1" name="STT" />
+                              <Bar dataKey="llm" stackId="a" fill="#4f46e5" name="LLM" />
+                              <Bar dataKey="tts" stackId="a" fill="#3730a3" radius={[4, 4, 0, 0]} name="TTS" />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        )}
+                      </motion.div>
+                      {stats?.latency && (
+                        <div className="flex justify-between border-t border-white/5 pt-4 text-[10px] font-bold uppercase text-zinc-500">
+                          <span>Avg turn: {Math.round(stats.latency.avg_total_ms)}ms</span>
+                          <span className="text-emerald-500">P95: {Math.round(stats.latency.p95_total_ms)}ms</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {activeTab === "agents" && (
+                  <motion.div className="space-y-6" layout>
+                    <div className="flex flex-wrap items-center justify-between gap-4">
+                      <div>
+                        <h2 className="text-2xl font-bold text-white">Voice Agents</h2>
+                        <p className="text-sm text-zinc-400">AI personalities and voice parameters.</p>
+                      </div>
+                    </div>
+                    {agents.length === 0 ? (
+                      <div className="glass-panel py-16 text-center text-zinc-600">No agents found.</div>
+                    ) : (
+                      <motion.div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3" layout>
+                        {agents.map((agent, i) => (
+                          <motion.div
+                            key={agent.id}
+                            layout
+                            initial={{ opacity: 0, y: 20 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ delay: i * 0.06 }}
+                            whileHover={{ scale: 1.02 }}
+                            className="glass-panel group space-y-6 p-6"
+                          >
+                            <div className="flex items-start justify-between">
+                              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-600 text-xl font-bold text-white shadow-lg shadow-indigo-500/20">
+                                {agent.name.charAt(0)}
+                              </div>
+                              <span className="badge-pill bg-zinc-500/10 text-zinc-400">idle</span>
+                            </div>
+                            <div>
+                              <h4 className="text-lg font-bold uppercase text-white transition-colors group-hover:text-indigo-400">
+                                {agent.name}
+                              </h4>
+                              <p className="mt-1 text-xs font-bold uppercase tracking-widest text-zinc-500">
+                                {agent.language_mode}
+                              </p>
+                            </div>
+                            <div className="space-y-4">
+                              <div className="flex items-center justify-between border-y border-white/5 py-2 text-xs">
+                                <span className="font-bold uppercase tracking-widest text-zinc-500">EN voice</span>
+                                <span className="font-medium text-white">{agent.voice_english}</span>
+                              </div>
+                              <motion.div className="flex items-center justify-between border-b border-white/5 pb-2 text-xs">
+                                <span className="font-bold uppercase tracking-widest text-zinc-500">HI voice</span>
+                                <span className="font-medium text-white">{agent.voice_hindi}</span>
+                              </motion.div>
+                            </div>
+                            {agent.description && (
+                              <p className="text-xs text-zinc-500">{agent.description}</p>
+                            )}
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedAgent(agent.id);
+                                  setActiveTab("dial");
+                                }}
+                                className="grow rounded-lg border border-white/10 bg-white/5 py-2 text-[10px] font-bold uppercase transition-all hover:bg-white/10"
+                              >
+                                Use for call
+                              </button>
+                              <button
+                                type="button"
+                                className="rounded-lg border border-white/10 bg-white/5 p-2 transition-all hover:text-indigo-400"
+                                aria-label="Agent details"
+                              >
+                                <Monitor className="h-4 w-4" />
+                              </button>
+                            </div>
+                          </motion.div>
+                        ))}
+                      </motion.div>
+                    )}
+                  </motion.div>
+                )}
+
+                {activeTab === "system" && (
+                  <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+                    <div className="space-y-6 lg:col-span-2">
+                      <div className="glass-panel space-y-6 p-6">
+                        <motion.div
+                          className="flex flex-wrap items-center justify-between gap-4"
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                        >
+                          <h3 className="text-lg font-bold text-white">System Diagnostics</h3>
+                          <motion.button
+                            type="button"
+                            onClick={runDiagnostics}
+                            disabled={diagLoading}
+                            whileHover={{ scale: 1.03 }}
+                            whileTap={{ scale: 0.97 }}
+                            className="rounded-lg bg-indigo-500 px-4 py-2 text-xs font-bold uppercase tracking-widest text-white shadow-md disabled:opacity-50"
+                          >
+                            {diagLoading ? "Scanning…" : "Run Full Scan"}
+                          </motion.button>
+                        </motion.div>
+                        <div className="space-y-4">
+                          <motion.div
+                            className="flex items-start gap-4 rounded-xl border border-indigo-500/10 bg-indigo-500/5 p-4"
+                            whileHover={{ x: 4 }}
+                          >
+                            <Cpu className="mt-1 h-5 w-5 text-indigo-400" />
+                            <div className="space-y-1">
+                              <p className="text-sm font-bold text-white">Groq LLM & STT</p>
+                              <p className="text-xs italic text-zinc-400">
+                                {healthInfo?.groq_configured
+                                  ? "API key configured. Models ready for voice pipeline."
+                                  : "Groq not configured — set GROQ_API_KEY on the API."}
+                              </p>
+                            </div>
+                            <span
+                              className={cn(
+                                "ml-auto text-[10px] font-bold uppercase",
+                                healthInfo?.groq_configured ? "text-emerald-400" : "text-rose-400"
+                              )}
+                            >
+                              {healthInfo?.groq_configured ? "Optimal" : "Missing"}
+                            </span>
+                          </motion.div>
+                          <motion.div
+                            className="flex items-start gap-4 rounded-xl border border-amber-500/10 bg-amber-500/5 p-4"
+                            whileHover={{ x: 4 }}
+                          >
+                            <Database className="mt-1 h-5 w-5 text-amber-400" />
+                            <motion.div className="space-y-1">
+                              <p className="text-sm font-bold text-white">CRM & Database</p>
+                              <p className="text-xs text-zinc-400">
+                                {healthInfo?.db_crm_ready
+                                  ? "CRM tables ready for call history and leads."
+                                  : healthInfo?.db_connected
+                                    ? "Connected — CRM schema may need initialization."
+                                    : "Database not connected or disabled."}
+                              </p>
+                            </motion.div>
+                            <span
+                              className={cn(
+                                "ml-auto text-[10px] font-bold uppercase",
+                                healthInfo?.db_crm_ready ? "text-emerald-400" : "text-amber-400"
+                              )}
+                            >
+                              {healthInfo?.db_crm_ready ? "Ready" : "Attention"}
+                            </span>
+                          </motion.div>
+                        </div>
+                      </div>
+                      <AnimatePresence>
+                        {diagResults && (
+                          <motion.div
+                            initial={{ opacity: 0, y: 12 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0 }}
+                            className="glass-panel space-y-4 p-6"
+                          >
+                            <h3 className="text-sm font-bold uppercase tracking-[0.2em] text-zinc-500">
+                              Debug output (JSON)
+                            </h3>
+                            <pre className="glass-panel max-h-96 overflow-auto bg-black/40 p-4 font-mono text-[11px] text-indigo-300">
+                              {JSON.stringify(diagResults, null, 2)}
+                            </pre>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                    <div className="space-y-6">
+                      <h3 className="px-2 text-xs font-bold uppercase tracking-widest text-zinc-500">
+                        Provider Status
+                      </h3>
+                      <div className="space-y-3">
+                        {providers.map((p, i) => (
+                          <motion.div
+                            key={p.name}
+                            initial={{ opacity: 0, x: 12 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            transition={{ delay: i * 0.05 }}
+                            className="glass-panel flex items-center justify-between p-4"
+                          >
+                            <span className="text-xs font-bold uppercase text-white">{p.name}</span>
+                            <div className="flex items-center gap-1.5">
+                              <motion.div
+                                className={cn("h-1.5 w-1.5 rounded-full", p.ok ? "bg-emerald-400" : "bg-rose-400")}
+                                animate={p.ok ? { scale: [1, 1.3, 1] } : {}}
+                                transition={{ duration: 2, repeat: Infinity }}
+                              />
+                              <span
+                                className={cn(
+                                  "text-[10px] font-bold uppercase tracking-wider",
+                                  p.ok ? "text-emerald-400" : "text-rose-400"
+                                )}
+                              >
+                                {p.ok ? "Up" : "Down"}
+                              </span>
+                            </div>
+                          </motion.div>
+                        ))}
+                      </div>
+                      <motion.div
+                        className="relative overflow-hidden rounded-2xl bg-indigo-600 p-6"
+                        whileHover={{ scale: 1.02 }}
+                      >
+                        <div className="relative z-10 space-y-4">
+                          <h4 className="font-bold leading-tight text-white">
+                            4-layer voice
+                            <br />
+                            architecture
+                          </h4>
+                          <p className="text-xs text-indigo-200">
+                            Twilio · Groq · Kokoro TTS · CRM pipeline
+                          </p>
+                        </div>
+                        <Phone className="absolute -bottom-6 -right-6 h-32 w-32 -rotate-12 text-indigo-500/30" />
+                      </motion.div>
+                    </div>
+                  </div>
+                )}
+              </motion.div>
+            </AnimatePresence>
+          </motion.div>
+        </motion.main>
+
+        <motion.footer
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.5 }}
+          className="flex h-20 items-center justify-center border-t border-white/5 opacity-40"
+        >
+          <p className="text-[10px] font-bold uppercase tracking-[0.35em] text-zinc-500">
+            AI Calling Agent · Groq · Twilio · Kokoro
+          </p>
+        </motion.footer>
+      </motion.div>
+
+      <AnimatePresence>
+        {healthStatus === "error" && !splash && (
+          <motion.div
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 50 }}
+            className="fixed bottom-6 left-1/2 z-[90] flex -translate-x-1/2 items-center gap-4 rounded-xl bg-rose-600 px-6 py-4 text-white shadow-2xl"
+          >
+            <AlertCircle className="h-6 w-6 shrink-0" />
+            <div>
+              <p className="text-sm font-bold">Backend offline</p>
+              <p className="text-xs opacity-90">Check {API} or Railway deployment.</p>
+            </div>
+            <button
+              type="button"
+              onClick={syncAll}
+              className="ml-2 rounded-lg px-3 py-1 text-xs font-bold uppercase hover:bg-white/20"
+            >
+              Retry
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
   );
 }

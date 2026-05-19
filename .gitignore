@@ -1,6 +1,7 @@
 # Environment secrets — NEVER commit
 .env
 *.env.local
+.railway-token
 
 # Python
 __pycache__/
@@ -27,7 +28,8 @@ redis_data/
 *.bin
 *.pt
 *.safetensors
-models/
+# Kokoro / ML weights only (not backend/app/models ORM package)
+backend/models/
 
 # IDE
 .vscode/
@@ -37,3 +39,7 @@ models/
 # Logs
 *.log
 logs/
+
+# Local reference / build artifacts
+frontend example
+*.tsbuildinfo

@@ -4,9 +4,6 @@ All settings sourced from environment variables.
 """
 from typing import List
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import field_validator
-
-
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -18,7 +15,8 @@ class Settings(BaseSettings):
     # ── App ───────────────────────────────────
     APP_ENV: str = "development"
     LOG_LEVEL: str = "INFO"
-    CORS_ORIGINS: List[str] = ["http://localhost:3000"]
+    # Comma-separated or JSON array string (List[str] env vars break on Railway)
+    CORS_ORIGINS: str = "http://localhost:3000"
     SECRET_KEY: str = ""
 
     # ── Twilio ────────────────────────────────
@@ -65,16 +63,13 @@ class Settings(BaseSettings):
     VAD_MIN_UTTERANCE_BYTES: int = 2400
     LLM_MAX_RESPONSE_TOKENS: int = 80
 
-    @field_validator("CORS_ORIGINS", mode="before")
-    @classmethod
-    def parse_cors(cls, v):
-        if isinstance(v, str):
-            s = v.strip()
-            if s.startswith("["):
-                import json
-                return json.loads(s)
-            return [o.strip() for o in s.split(",") if o.strip()]
-        return v
+    @property
+    def cors_origins(self) -> List[str]:
+        s = self.CORS_ORIGINS.strip()
+        if s.startswith("["):
+            import json
+            return json.loads(s)
+        return [o.strip() for o in s.split(",") if o.strip()]
 
     @property
     def groq_intent_model(self) -> str:

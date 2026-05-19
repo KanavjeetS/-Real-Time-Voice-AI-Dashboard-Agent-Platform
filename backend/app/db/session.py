@@ -83,7 +83,7 @@ async def init_db():
         autoflush=False,
     )
 
-    from app.models import call  # noqa: F401
+    from app.models.call import Agent, Call, CallTurn, Lead  # noqa: F401
 
     try:
         async with engine.begin() as conn:
