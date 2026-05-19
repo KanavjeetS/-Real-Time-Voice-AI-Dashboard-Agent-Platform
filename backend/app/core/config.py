@@ -28,16 +28,18 @@ class Settings(BaseSettings):
 
     # ── Groq ──────────────────────────────────
     GROQ_API_KEY: str = ""
-    GROQ_LLM_MODEL: str = "meta-llama/llama-4-scout-17b-16e-instruct"
-    GROQ_INTENT_MODEL: str = "llama-3.1-8b-instant"  # fast intent; empty = use GROQ_LLM_MODEL
+    GROQ_LLM_MODEL: str = "llama-3.1-8b-instant"
+    GROQ_INTENT_MODEL: str = "llama-3.1-8b-instant"
     GROQ_STT_MODEL: str = "whisper-large-v3"
     # Empty = Whisper auto-detects language (bilingual support)
     GROQ_STT_LANGUAGE: str = ""
 
     # ── TTS ───────────────────────────────────
-    TTS_PROVIDER: str = "kokoro"
+    TTS_PROVIDER: str = "auto"  # auto | edge | kokoro
     TTS_VOICE_ENGLISH: str = "af_sarah"
     TTS_VOICE_HINDI: str = "af_sky"
+    TTS_EDGE_VOICE_ENGLISH: str = "en-IN-NeerjaNeural"
+    TTS_EDGE_VOICE_HINDI: str = "hi-IN-SwaraNeural"
     TTS_SAMPLE_RATE: int = 8000
 
     # ── Database ──────────────────────────────
@@ -59,9 +61,10 @@ class Settings(BaseSettings):
     # ── Performance ───────────────────────────
     MAX_CONCURRENT_CALLS: int = 10
     CALL_TIMEOUT_SECONDS: int = 300
-    VAD_SILENCE_THRESHOLD_MS: int = 350
-    VAD_MIN_UTTERANCE_BYTES: int = 2400
-    LLM_MAX_RESPONSE_TOKENS: int = 80
+    VAD_SILENCE_THRESHOLD_MS: int = 250
+    VAD_MIN_UTTERANCE_BYTES: int = 1600
+    LLM_MAX_RESPONSE_TOKENS: int = 40
+    LOW_LATENCY_MODE: bool = True
 
     @property
     def cors_origins(self) -> List[str]:

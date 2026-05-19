@@ -27,9 +27,7 @@ async def lifespan(app: FastAPI):
     log.info("vahanai.startup", env=settings.APP_ENV, tier=settings.MODEL_TIER)
     await init_db()
     if settings.STARTUP_WARM_MODELS:
-        from app.services.stt import STTService
         from app.services.tts import TTSService
-        await STTService.warm_up()
         await TTSService.warm_up()
         log.info("vahanai.models_warmed")
     yield

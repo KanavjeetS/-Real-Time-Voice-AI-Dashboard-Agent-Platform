@@ -10,6 +10,7 @@ Replaces naive STT → LLM → TTS with:
 """
 import re
 import time
+import asyncio
 from dataclasses import dataclass
 from typing import Optional
 
@@ -55,11 +56,28 @@ class ConversationOrchestrator:
         latency: TurnLatency,
     ) -> OrchestratorResult:
         orch_start = time.monotonic()
-        memory = await MemoryStore.load(call_sid)
-        memory.turn_count += 1
+        memory_task = asyncio.create_task(MemoryStore.load(call_sid))
 
-        intent, confidence = await LLMService.classify_intent_with_confidence(user_text, language)
-        latency.orchestration_ms = int((time.monotonic() - orch_start) * 1000)
+        if settings.LOW_LATENCY_MODE:
+            memory = await memory_task
+            memory.turn_count += 1
+            llm_result = await LLMService.generate_turn_combined(
+                conversation_history=conversation_history,
+                system_prompt=system_prompt,
+                language=language,
+                max_tokens=settings.LLM_MAX_RESPONSE_TOKENS,
+            )
+            llm_ms = llm_result["latency_ms"]
+            latency.mark_llm(llm_ms)
+            intent = llm_result["intent"]
+            confidence = llm_result["intent_confidence"]
+            response_text = llm_result["response"]
+        else:
+            memory = await memory_task
+            memory.turn_count += 1
+            intent, confidence = await LLMService.classify_intent_with_confidence(user_text, language)
+            latency.orchestration_ms = int((time.monotonic() - orch_start) * 1000)
+            response_text = None  # filled by full LLM path below
 
         angry_turns = memory.facts.get("angry_turns", 0)
         if intent == "angry":
@@ -95,10 +113,11 @@ class ConversationOrchestrator:
 
         cls._extract_slots(memory, user_text, language)
 
-        state_guidance = cls._state_guidance(DialogueState(memory.dialogue_state), language)
-        objection_guidance = objection_prompt(objection, language) if objection else ""
+        if not settings.LOW_LATENCY_MODE:
+            state_guidance = cls._state_guidance(DialogueState(memory.dialogue_state), language)
+            objection_guidance = objection_prompt(objection, language) if objection else ""
 
-        augmented_system = f"""{system_prompt}
+            augmented_system = f"""{system_prompt}
 
 --- CONVERSATION ORCHESTRATION ---
 {memory.context_block()}
@@ -112,16 +131,19 @@ Rules:
 - If customer interrupted you, acknowledge briefly first.
 """
 
-        llm_start = time.monotonic()
-        llm_result = await LLMService.generate_response(
-            messages=conversation_history,
-            system_prompt=augmented_system,
-            detected_language=language,
-            max_tokens=settings.LLM_MAX_RESPONSE_TOKENS,
-            skip_intent_classification=True,
-        )
-        llm_ms = int((time.monotonic() - llm_start) * 1000)
-        latency.mark_llm(llm_ms)
+            llm_start = time.monotonic()
+            llm_result = await LLMService.generate_response(
+                messages=conversation_history,
+                system_prompt=augmented_system,
+                detected_language=language,
+                max_tokens=settings.LLM_MAX_RESPONSE_TOKENS,
+                skip_intent_classification=True,
+            )
+            llm_ms = int((time.monotonic() - llm_start) * 1000)
+            latency.mark_llm(llm_ms)
+            response_text = llm_result["response"]
+        else:
+            llm_ms = llm_result["latency_ms"]
 
         lead_score = cls._compute_lead_score(intent, confidence, memory)
 
@@ -131,7 +153,7 @@ Rules:
         should_end = escalation.end_call or intent_action in ("end_call_gracefully", "thank_and_end")
 
         return OrchestratorResult(
-            response=llm_result["response"],
+            response=response_text,
             intent=intent,
             intent_confidence=confidence,
             intent_action=intent_action,

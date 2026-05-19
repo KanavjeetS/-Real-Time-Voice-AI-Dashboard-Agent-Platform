@@ -22,6 +22,7 @@ from app.observability.latency import TurnLatency, LatencyAggregator
 from app.observability.tracing import bind_call_context, clear_call_context
 from app.workers.queue import enqueue, JobType
 from app.utils.language import resolve_conversation_language
+from app.utils.voice import truncate_for_voice
 
 log = structlog.get_logger()
 router = APIRouter()
@@ -128,11 +129,7 @@ async def _handle_call(websocket: WebSocket, state: dict):
             agent = await CRMService.get_agent(agent_id)
             if agent:
                 session.system_prompt = agent.get("system_prompt") or DEFAULT_SYSTEM_PROMPT
-            greeting = (
-                f"Hi, this is {agent['name'].split()[0] if agent else 'Priya'} from the loans team. How are you?"
-                if agent
-                else "Hi, this is Priya from the loans team. How are you?"
-            )
+            greeting = "Hi, this is Priya. How are you today?"
             asyncio.create_task(
                 _send_greeting(websocket, session, stream_sid, greeting)
             )
@@ -310,7 +307,10 @@ async def _generate_and_send_tts(
     if not stream_sid:
         log.warning("tts.skip_no_stream_sid", call_sid=session.call_sid)
         return
-    audio_bytes = await TTSService.synthesize(text, language=language)
+    audio_bytes = await TTSService.synthesize(
+        truncate_for_voice(text, max_words=14),
+        language=language,
+    )
     if not audio_bytes:
         log.error("tts.empty_audio", call_sid=session.call_sid, chars=len(text))
         return

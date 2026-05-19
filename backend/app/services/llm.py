@@ -173,6 +173,8 @@ Transcript:
         system_prompt: str,
         max_tokens: int = 150,
         retries: int = 3,
+        temperature: float = 0.7,
+        timeout: float = 10.0,
     ) -> str:
         """Call Groq with exponential backoff on 429 rate limits."""
         from groq import AsyncGroq, RateLimitError
@@ -191,10 +193,10 @@ Transcript:
                         model=settings.GROQ_LLM_MODEL,
                         messages=[{"role": "system", "content": system_prompt}] + messages,
                         max_tokens=max_tokens,
-                        temperature=0.7,
+                        temperature=temperature,
                         stream=False,
                     ),
-                    timeout=10.0  # Per-call timeout
+                    timeout=timeout,
                 )
                 return response.choices[0].message.content.strip()
 
@@ -248,3 +250,58 @@ Respond with ONLY the label name, nothing else."""
             return label if label in INTENT_LABELS else "neutral"
         except Exception:
             return "neutral"
+
+    @classmethod
+    async def generate_turn_combined(
+        cls,
+        conversation_history: list[dict],
+        system_prompt: str,
+        language: str,
+        max_tokens: int = 40,
+    ) -> dict:
+        """
+        Single fast Groq call: intent + short spoken reply (saves ~400–700 ms vs two calls).
+        """
+        from app.utils.voice import truncate_for_voice
+
+        labels = ", ".join(INTENT_LABELS.keys())
+        lang_name = "Hindi (Devanagari)" if language == "hi" else "English"
+        compact_system = f"""{system_prompt}
+
+Live phone call. Customer language: {lang_name}.
+Reply in ONE short sentence (max 12 words). No preamble.
+
+Reply format (exactly two lines):
+INTENT: <one of {labels}>
+SAY: <spoken reply>"""
+
+        start = time.monotonic()
+        raw = await cls._call_groq_with_retry(
+            messages=conversation_history[-6:],
+            system_prompt=compact_system,
+            max_tokens=max_tokens,
+            temperature=0.5,
+            timeout=4.0,
+            retries=2,
+        )
+        latency_ms = int((time.monotonic() - start) * 1000)
+
+        intent = "neutral"
+        response = raw.strip()
+        for line in raw.splitlines():
+            upper = line.strip().upper()
+            if upper.startswith("INTENT:"):
+                label = line.split(":", 1)[1].strip().lower().split()[0]
+                if label in INTENT_LABELS:
+                    intent = label
+            elif upper.startswith("SAY:"):
+                response = line.split(":", 1)[1].strip()
+
+        response = truncate_for_voice(response)
+        log.info("llm.turn_combined", intent=intent, latency_ms=latency_ms, chars=len(response))
+        return {
+            "response": response,
+            "intent": intent,
+            "intent_confidence": 0.75,
+            "latency_ms": latency_ms,
+        }
