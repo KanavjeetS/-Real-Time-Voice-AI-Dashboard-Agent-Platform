@@ -265,15 +265,22 @@ Respond with ONLY the label name, nothing else."""
         from app.utils.voice import truncate_for_voice
 
         labels = ", ".join(INTENT_LABELS.keys())
+        actions = ", ".join(sorted(set(INTENT_ACTIONS.values())))
         lang_name = "Hindi (Devanagari)" if language == "hi" else "English"
         compact_system = f"""{system_prompt}
 
 Live phone call. Customer language: {lang_name}.
-Reply in ONE short sentence (max 12 words). No preamble.
+Real-time loan assistant responsibilities:
+- greeting, eligibility inquiry, EMI clarification, document reminder
+- objection handling, callback booking, escalation on hot leads
+Reply in ONE short spoken sentence (max 12 words). No preamble.
 
-Reply format (exactly two lines):
+Reply format (exactly three lines):
 INTENT: <one of {labels}>
-SAY: <spoken reply>"""
+ACTION: <one of {actions}>
+SAY: <spoken reply>
+
+Never output extra lines or commentary."""
 
         start = time.monotonic()
         raw = await cls._call_groq_with_retry(
@@ -287,6 +294,7 @@ SAY: <spoken reply>"""
         latency_ms = int((time.monotonic() - start) * 1000)
 
         intent = "neutral"
+        intent_action = INTENT_ACTIONS.get(intent, "continue")
         response = raw.strip()
         for line in raw.splitlines():
             upper = line.strip().upper()
@@ -294,6 +302,11 @@ SAY: <spoken reply>"""
                 label = line.split(":", 1)[1].strip().lower().split()[0]
                 if label in INTENT_LABELS:
                     intent = label
+                    intent_action = INTENT_ACTIONS.get(intent, "continue")
+            elif upper.startswith("ACTION:"):
+                action = line.split(":", 1)[1].strip().lower().replace(" ", "_")
+                if action in INTENT_ACTIONS.values():
+                    intent_action = action
             elif upper.startswith("SAY:"):
                 response = line.split(":", 1)[1].strip()
 
@@ -302,6 +315,7 @@ SAY: <spoken reply>"""
         return {
             "response": response,
             "intent": intent,
+            "intent_action": intent_action,
             "intent_confidence": 0.75,
             "latency_ms": latency_ms,
         }

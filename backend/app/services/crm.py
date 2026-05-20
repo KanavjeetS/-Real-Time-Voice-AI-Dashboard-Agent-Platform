@@ -162,6 +162,8 @@ class CRMService:
                     speaker="agent",
                     transcript=agent_response,
                     language=language,
+                    intent=getattr(session, "follow_up_action", "continue"),
+                    sentiment=getattr(session, "lead_score", None),
                     latency_ms=latency_ms,
                 ))
                 await db.commit()
@@ -210,6 +212,7 @@ class CRMService:
             duration = int(time.monotonic() - session.call_start_time)
             lead_score = getattr(session, "lead_score", None)
             sentiment = float(lead_score) if lead_score is not None else None
+            follow_up_action = getattr(session, "follow_up_action", "continue")
 
             async with AsyncSessionLocal() as db:
                 await db.execute(
@@ -221,10 +224,17 @@ class CRMService:
                         detected_language=session.detected_language,
                         intent_label=session.current_intent,
                         sentiment_score=sentiment,
+                        summary=f"Follow-up action: {follow_up_action}",
                         ended_at=datetime.utcnow(),
                     )
                 )
                 await db.commit()
+                await cls._update_lead_status_by_phone(
+                    db=db,
+                    phone=session.phone_number,
+                    intent=session.current_intent,
+                    follow_up_action=follow_up_action,
+                )
                 log.info("crm.call_finalized",
                          call_sid=session.call_sid,
                          duration_s=duration,
@@ -232,6 +242,46 @@ class CRMService:
                          lead_score=lead_score)
         except Exception as e:
             log.error("crm.finalize_error", error=str(e))
+
+    @classmethod
+    async def _update_lead_status_by_phone(cls, db, phone: str, intent: str, follow_up_action: str) -> None:
+        """Best-effort lead status update after call finalization."""
+        if not phone:
+            return
+        try:
+            from app.models.call import Lead
+            from sqlalchemy import select, update
+
+            norm = "".join(ch for ch in phone if ch.isdigit())
+            variants = {phone}
+            if norm:
+                variants.add(norm)
+                if norm.startswith("91") and len(norm) == 12:
+                    variants.add(norm[2:])
+
+            lead = await db.scalar(select(Lead).where(Lead.phone.in_(list(variants))).limit(1))
+            if not lead:
+                return
+
+            status_map = {
+                "interested": "qualified",
+                "high_ticket": "hot",
+                "callback": "callback_scheduled",
+                "confused": "follow_up_needed",
+                "angry": "escalated",
+                "not_interested": "closed_not_interested",
+                "spam_invalid": "invalid",
+            }
+            new_status = status_map.get(intent, "in_progress")
+            note = f"AI follow-up action: {follow_up_action}; intent: {intent}"
+            await db.execute(
+                update(Lead)
+                .where(Lead.id == lead.id)
+                .values(status=new_status, notes=note, updated_at=datetime.utcnow())
+            )
+            await db.commit()
+        except Exception as e:
+            log.warning("crm.lead_status_update_skipped", error=str(e))
 
     @classmethod
     async def generate_and_store_summary(
@@ -301,6 +351,64 @@ class CRMService:
             log.error("crm.lead_score_error", error=str(e))
 
     @classmethod
+    async def update_recording(cls, call_sid: str, recording_url: str | None, recording_status: str | None) -> None:
+        """Persist Twilio recording URL for dashboard playback."""
+        if not settings.db_configured or not call_sid:
+            return
+        if recording_url and not recording_url.endswith(".mp3"):
+            recording_url = f"{recording_url}.mp3"
+        try:
+            from app.db.session import AsyncSessionLocal
+            from app.models.call import Call
+            from sqlalchemy import update
+
+            async with AsyncSessionLocal() as db:
+                await db.execute(
+                    update(Call)
+                    .where(Call.call_sid == call_sid)
+                    .values(
+                        recording_url=recording_url,
+                    )
+                )
+                await db.commit()
+        except Exception as e:
+            log.error("crm.recording_update_error", error=str(e))
+
+    @classmethod
+    async def get_call_turns(cls, call_id: str) -> list[dict]:
+        """Fetch transcript turns for a given call."""
+        if not settings.db_configured:
+            return []
+        try:
+            from app.db.session import AsyncSessionLocal
+            from app.models.call import CallTurn
+            from sqlalchemy import select
+
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(
+                    select(CallTurn)
+                    .where(CallTurn.call_id == uuid.UUID(call_id))
+                    .order_by(CallTurn.turn_index.asc())
+                )
+                turns = result.scalars().all()
+                return [
+                    {
+                        "turn_index": t.turn_index,
+                        "speaker": t.speaker,
+                        "transcript": t.transcript,
+                        "language": t.language,
+                        "intent": t.intent,
+                        "sentiment": float(t.sentiment) if t.sentiment is not None else None,
+                        "latency_ms": t.latency_ms,
+                        "created_at": t.created_at.isoformat() if t.created_at else None,
+                    }
+                    for t in turns
+                ]
+        except Exception as e:
+            log.error("crm.get_turns_error", error=str(e))
+            return []
+
+    @classmethod
     async def send_slack_alert(cls, session, transcript: str, intent: str) -> None:
         """Send Slack webhook for high-value intent (fires DURING call, not after)."""
         if not settings.SLACK_WEBHOOK_URL:
@@ -364,6 +472,7 @@ class CRMService:
                 recent = await db.execute(
                     select(Call).order_by(Call.created_at.desc()).limit(10)
                 )
+                recent_call_rows = recent.scalars().all()
                 recent_calls = [
                     {
                         "id": str(c.id),
@@ -371,12 +480,31 @@ class CRMService:
                         "phone": c.phone_number,
                         "status": c.status,
                         "intent": c.intent_label,
+                        "follow_up_action": c.summary.replace("Follow-up action: ", "") if c.summary and c.summary.startswith("Follow-up action: ") else None,
+                        "sentiment_score": float(c.sentiment_score) if c.sentiment_score is not None else None,
+                        "recording_url": c.recording_url,
                         "duration_s": c.duration_seconds,
                         "language": c.detected_language,
                         "created_at": c.created_at.isoformat() if c.created_at else None,
                     }
-                    for c in recent.scalars().all()
+                    for c in recent_call_rows
                 ]
+
+                turn_rows = await db.execute(
+                    select(CallTurn.call_id, CallTurn.intent, CallTurn.speaker)
+                    .where(CallTurn.speaker == "user")
+                    .where(CallTurn.intent.isnot(None))
+                )
+                user_turns = turn_rows.all()
+                total_user_intent_turns = len(user_turns)
+                mismatch_turns = 0
+                call_final_intent = {str(c.id): c.intent_label for c in recent_call_rows}
+                for row in user_turns:
+                    cid = str(row[0])
+                    final_intent = call_final_intent.get(cid)
+                    if final_intent and row[1] and row[1] != final_intent and row[1] != "neutral":
+                        mismatch_turns += 1
+                false_positive_rate = round((mismatch_turns / total_user_intent_turns) * 100, 2) if total_user_intent_turns else 0.0
 
                 from app.observability.latency import LatencyAggregator
 
@@ -384,6 +512,17 @@ class CRMService:
                     "total_calls_today": total_today or 0,
                     "avg_duration_seconds": float(avg_duration or 0),
                     "intent_breakdown": intent_counts,
+                    "conversion_metrics": {
+                        "qualified_calls": int((intent_counts.get("interested", 0) or 0) + (intent_counts.get("high_ticket", 0) or 0)),
+                        "conversion_rate_percent": round(
+                            (
+                                ((intent_counts.get("interested", 0) or 0) + (intent_counts.get("high_ticket", 0) or 0))
+                                / max(int(total_today or 0), 1)
+                            ) * 100,
+                            2,
+                        ),
+                    },
+                    "intent_false_positive_rate_percent": false_positive_rate,
                     "recent_calls": recent_calls,
                     "active_calls": 0,
                     "latency": LatencyAggregator.summary(),
@@ -401,6 +540,11 @@ def _mock_stats(warning: str = "Database not configured — showing empty stats"
         "total_calls_today": 0,
         "avg_duration_seconds": 0,
         "intent_breakdown": {},
+        "conversion_metrics": {
+            "qualified_calls": 0,
+            "conversion_rate_percent": 0.0,
+        },
+        "intent_false_positive_rate_percent": 0.0,
         "recent_calls": [],
         "active_calls": 0,
         "latency": LatencyAggregator.summary(),

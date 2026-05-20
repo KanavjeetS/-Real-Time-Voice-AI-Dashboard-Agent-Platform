@@ -67,9 +67,23 @@ interface Call {
   phone: string;
   status: string;
   intent?: string;
+  follow_up_action?: string | null;
+  sentiment_score?: number | null;
+  recording_url?: string | null;
   duration_s: number;
   language: string;
   created_at: string;
+}
+
+interface CallTurn {
+  turn_index: number;
+  speaker: "user" | "agent";
+  transcript: string;
+  language?: string | null;
+  intent?: string | null;
+  sentiment?: number | null;
+  latency_ms?: number | null;
+  created_at?: string | null;
 }
 
 interface LatencyStats {
@@ -86,6 +100,11 @@ interface Stats {
   total_calls_today: number;
   avg_duration_seconds: number;
   intent_breakdown: Record<string, number>;
+  conversion_metrics?: {
+    qualified_calls: number;
+    conversion_rate_percent: number;
+  };
+  intent_false_positive_rate_percent?: number;
   recent_calls: Call[];
   active_calls: number;
   latency?: LatencyStats;
@@ -135,7 +154,17 @@ function previewE164(raw: string): string | null {
   const s = raw.trim();
   if (!s) return null;
   const digits = s.replace(/\D/g, "");
-  if (s.startsWith("+")) return "+" + digits;
+  if (s.startsWith("+")) {
+    if (digits.startsWith("91")) {
+      if (digits.length === 12 && /^[6-9]/.test(digits.slice(2, 3))) return `+${digits}`;
+      return null;
+    }
+    if (digits.startsWith("1")) {
+      if (digits.length === 11) return `+${digits}`;
+      return null;
+    }
+    return digits.length >= 10 ? `+${digits}` : null;
+  }
   if (digits.length === 10 && /^[6-9]/.test(digits)) return `+91${digits}`;
   if (digits.length === 12 && digits.startsWith("91")) return `+${digits}`;
   if (digits.length === 11 && digits.startsWith("0") && /^[6-9]/.test(digits.slice(1)))
@@ -177,6 +206,9 @@ export default function Dashboard() {
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [diagLoading, setDiagLoading] = useState(false);
   const [diagResults, setDiagResults] = useState<Record<string, unknown> | null>(null);
+  const [selectedCall, setSelectedCall] = useState<Call | null>(null);
+  const [callTurns, setCallTurns] = useState<CallTurn[]>([]);
+  const [turnsLoading, setTurnsLoading] = useState(false);
 
   const fetchAgents = useCallback(async () => {
     try {
@@ -259,6 +291,21 @@ export default function Dashboard() {
     }
   };
 
+  const loadCallTurns = async (call: Call) => {
+    setSelectedCall(call);
+    setTurnsLoading(true);
+    setCallTurns([]);
+    try {
+      const res = await fetch(`${API}/api/v1/calls/${call.id}/turns`);
+      const data = await res.json();
+      if (res.ok) {
+        setCallTurns((data.turns || []) as CallTurn[]);
+      }
+    } finally {
+      setTurnsLoading(false);
+    }
+  };
+
   useEffect(() => {
     const boot = async () => {
       await Promise.all([checkHealth(), fetchAgents(), fetchStats()]);
@@ -274,8 +321,17 @@ export default function Dashboard() {
   }, [checkHealth, fetchAgents, fetchStats]);
 
   const initiateCall = async () => {
+    const normalizedPhone = previewE164(phoneNumber);
     if (!phoneNumber.trim()) {
       setCallResult({ success: false, message: "Enter a phone number first." });
+      return;
+    }
+    if (!normalizedPhone) {
+      setCallResult({
+        success: false,
+        message:
+          "Invalid number format. For India use a valid 10-digit mobile or +91XXXXXXXXXX.",
+      });
       return;
     }
     setCalling(true);
@@ -285,7 +341,7 @@ export default function Dashboard() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          phone_number: phoneNumber,
+          phone_number: normalizedPhone,
           agent_id: selectedAgent || undefined,
         }),
       });
@@ -480,7 +536,12 @@ export default function Dashboard() {
               value={stats ? fmtDuration(Math.round(stats.avg_duration_seconds)) : "—"}
               sublabel="Per completed call"
             />
-            <StatCard icon={Users} label="Voice Agents" value={agents.length} sublabel="Configured profiles" />
+            <StatCard
+              icon={Users}
+              label="Intent FP Rate"
+              value={stats?.intent_false_positive_rate_percent != null ? `${stats.intent_false_positive_rate_percent}%` : "—"}
+              sublabel="Estimated misclassification"
+            />
           </motion.section>
 
           <motion.nav
@@ -691,15 +752,19 @@ export default function Dashboard() {
                               <th className="px-6 py-4">Customer</th>
                               <th className="px-6 py-4">Status</th>
                               <th className="px-6 py-4">Intent</th>
+                              <th className="px-6 py-4">Action</th>
                               <th className="px-6 py-4">Duration</th>
+                              <th className="px-6 py-4">Sentiment</th>
                               <th className="px-6 py-4">Lang</th>
                               <th className="px-6 py-4">Time</th>
+                              <th className="px-6 py-4">Recording</th>
+                              <th className="px-6 py-4">Transcript</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-white/5">
                             {(stats?.recent_calls || []).length === 0 ? (
                               <tr>
-                                <td colSpan={6} className="px-6 py-12 text-center text-zinc-600">
+                                <td colSpan={10} className="px-6 py-12 text-center text-zinc-600">
                                   No calls yet. Use Dial to place your first call.
                                 </td>
                               </tr>
@@ -746,14 +811,36 @@ export default function Dashboard() {
                                       </span>
                                     )}
                                   </td>
+                                  <td className="px-6 py-4 text-xs text-zinc-300">
+                                    {call.follow_up_action?.replace(/_/g, " ") || "—"}
+                                  </td>
                                   <td className="px-6 py-4 font-mono text-sm text-zinc-400">
                                     {fmtDuration(call.duration_s)}
+                                  </td>
+                                  <td className="px-6 py-4 text-xs text-zinc-300">
+                                    {call.sentiment_score != null ? call.sentiment_score.toFixed(2) : "—"}
                                   </td>
                                   <td className="px-6 py-4 text-xs font-bold text-zinc-500">
                                     {call.language === "hi" ? "HI" : "EN"}
                                   </td>
                                   <td className="px-6 py-4 text-xs text-zinc-400">
                                     {call.created_at ? new Date(call.created_at).toLocaleString() : "—"}
+                                  </td>
+                                  <td className="px-6 py-4">
+                                    {call.recording_url ? (
+                                      <audio controls preload="none" src={call.recording_url} className="h-8 w-44" />
+                                    ) : (
+                                      <span className="text-xs text-zinc-600">—</span>
+                                    )}
+                                  </td>
+                                  <td className="px-6 py-4">
+                                    <button
+                                      type="button"
+                                      onClick={() => loadCallTurns(call)}
+                                      className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[10px] font-bold uppercase text-zinc-300 hover:bg-white/10"
+                                    >
+                                      View
+                                    </button>
                                   </td>
                                 </motion.tr>
                               ))
@@ -762,6 +849,41 @@ export default function Dashboard() {
                         </table>
                       </div>
                     </div>
+                    {selectedCall && (
+                      <div className="glass-panel p-4">
+                        <div className="mb-3 flex items-center justify-between">
+                          <h3 className="text-sm font-bold text-white">
+                            Transcript · {selectedCall.phone} · {selectedCall.call_sid?.slice(0, 12)}...
+                          </h3>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedCall(null);
+                              setCallTurns([]);
+                            }}
+                            className="text-xs text-zinc-400 hover:text-white"
+                          >
+                            Close
+                          </button>
+                        </div>
+                        {turnsLoading ? (
+                          <p className="text-sm text-zinc-500">Loading transcript...</p>
+                        ) : callTurns.length === 0 ? (
+                          <p className="text-sm text-zinc-500">No transcript turns found for this call.</p>
+                        ) : (
+                          <div className="max-h-72 space-y-2 overflow-auto pr-1">
+                            {callTurns.map((t) => (
+                              <div key={`${t.turn_index}-${t.speaker}`} className="rounded-lg border border-white/10 bg-white/5 p-2">
+                                <p className="text-[10px] font-bold uppercase text-zinc-400">
+                                  {t.speaker} · {t.intent || "—"} · {t.language || "—"}
+                                </p>
+                                <p className="text-sm text-zinc-200">{t.transcript}</p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
 

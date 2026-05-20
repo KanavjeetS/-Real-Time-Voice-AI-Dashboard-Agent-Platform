@@ -23,6 +23,13 @@ def normalize_phone_e164(raw: str, default_region: str = "IN") -> str:
         digits = re.sub(r"\D", "", s)
         if len(digits) < 10:
             raise ValueError("Invalid phone number")
+        # Strict validation for common regions to catch typo-length numbers early.
+        if digits.startswith("91"):
+            if len(digits) != 12 or not _IN_MOBILE.match(digits[2:]):
+                raise ValueError("Invalid India number. Use +91 followed by a valid 10-digit mobile number")
+        if digits.startswith("1"):
+            if len(digits) != 11:
+                raise ValueError("Invalid US number. Use +1 followed by a valid 10-digit number")
         return f"+{digits}"
 
     digits = re.sub(r"\D", "", s)

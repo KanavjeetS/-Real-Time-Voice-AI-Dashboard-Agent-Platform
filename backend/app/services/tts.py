@@ -50,6 +50,12 @@ class TTSService:
         if provider == "kokoro":
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(_get_executor(), cls._load_kokoro_model)
+        elif provider == "edge":
+            # Verify edge TTS works before accepting traffic (avoid 60s+ kokoro fallback).
+            probe = await cls.synthesize("Hello.", "en", skip_cache=True)
+            if not probe:
+                log.error("tts.edge_warm_failed", hint="Check edge-tts version and outbound network")
+                return
         # Pre-cache greeting (most common first utterance)
         key = cls._cache_key(_EDGE_GREETING, "en")
         if key not in _phrase_cache:
@@ -91,7 +97,7 @@ class TTSService:
                 )
         except Exception as e:
             log.error("tts.synthesize_failed", provider=provider, error=str(e))
-            if provider == "edge":
+            if provider == "edge" and not settings.is_production:
                 try:
                     loop = asyncio.get_event_loop()
                     voice = settings.TTS_VOICE_ENGLISH

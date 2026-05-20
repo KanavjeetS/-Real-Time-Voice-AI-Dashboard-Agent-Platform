@@ -149,7 +149,9 @@ Rules:
 
         await MemoryStore.save(memory)
 
-        intent_action = INTENT_ACTIONS.get(intent, "continue")
+        intent_action = llm_result.get("intent_action") if settings.LOW_LATENCY_MODE else INTENT_ACTIONS.get(intent, "continue")
+        if intent_action not in INTENT_ACTIONS.values():
+            intent_action = INTENT_ACTIONS.get(intent, "continue")
         should_end = escalation.end_call or intent_action in ("end_call_gracefully", "thank_and_end")
 
         return OrchestratorResult(

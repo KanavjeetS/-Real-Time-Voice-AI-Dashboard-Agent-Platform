@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     GROQ_STT_MODEL: str = "whisper-large-v3"
     # Empty = Whisper auto-detects language (bilingual support)
     GROQ_STT_LANGUAGE: str = ""
+    DEEPGRAM_API_KEY: str = ""
+    ENABLE_STREAMING_STT: bool = True
+    STT_STREAM_ENDPOINTING_MS: int = 250
 
     # ── TTS ───────────────────────────────────
     TTS_PROVIDER: str = "auto"  # auto | edge | kokoro

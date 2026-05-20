@@ -13,6 +13,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.core.config import settings
 from app.services.stt import STTService
+from app.services.stt_streaming import DeepgramStreamingSession
 from app.services.tts import TTSService
 from app.services.crm import CRMService
 from app.services.defaults import DEFAULT_AGENT_ID, DEFAULT_SYSTEM_PROMPT
@@ -48,6 +49,7 @@ class CallSession:
         self.conversation_history: list[dict] = []
         self.detected_language: str = "en"
         self.current_intent: str = "neutral"
+        self.follow_up_action: str = "continue"
         self.audio_buffer: bytearray = bytearray()
         self.is_speaking: bool = False
         self.last_speech_time: float = time.monotonic()
@@ -60,6 +62,7 @@ class CallSession:
         self.was_interrupted: bool = False
         self.system_prompt: str = DEFAULT_SYSTEM_PROMPT
         self._processing_turn: bool = False
+        self.stt_stream: Optional[DeepgramStreamingSession] = None
 
 
 @router.websocket("/ws/twilio")
@@ -119,6 +122,10 @@ async def _handle_call(websocket: WebSocket, state: dict):
             )
             state["session"] = session
             bind_call_context(call_sid)
+            if settings.ENABLE_STREAMING_STT and settings.DEEPGRAM_API_KEY:
+                stream = DeepgramStreamingSession(call_sid=call_sid, hint_language=session.detected_language)
+                if await stream.start():
+                    session.stt_stream = stream
 
             log.info("call.started", call_sid=call_sid, phone=session.phone_number, agent_id=agent_id)
             try:
@@ -141,6 +148,8 @@ async def _handle_call(websocket: WebSocket, state: dict):
 
             mulaw_audio = base64.b64decode(payload)
             pcm_audio = mulaw_to_pcm16(mulaw_audio)
+            if session.stt_stream:
+                await session.stt_stream.send_audio(pcm_audio)
             energy = compute_rms(pcm_audio)
 
             if energy > VAD_ENERGY_THRESHOLD:
@@ -159,12 +168,23 @@ async def _handle_call(websocket: WebSocket, state: dict):
                     and len(session.audio_buffer) >= VAD_MIN_UTTERANCE_BYTES
                     and not session._processing_turn
                 ):
+                    if session.stt_stream:
+                        await session.stt_stream.finalize()
                     utterance_audio = bytes(session.audio_buffer)
                     session.audio_buffer = bytearray()
                     session.is_speaking = False
                     session._processing_turn = True
                     asyncio.create_task(
                         _process_utterance(websocket, session, stream_sid, utterance_audio)
+                    )
+
+            # Streaming path: process finalized transcript immediately (no extra VAD wait).
+            if session.stt_stream and not session._processing_turn:
+                streamed_text = await session.stt_stream.pop_final_transcript()
+                if streamed_text:
+                    session._processing_turn = True
+                    asyncio.create_task(
+                        _process_streamed_transcript(websocket, session, stream_sid, streamed_text)
                     )
 
         elif event == "stop" and session:
@@ -225,6 +245,7 @@ async def _process_utterance(
 
             response_text = orch.response
             session.current_intent = orch.intent
+            session.follow_up_action = orch.intent_action
             session.intent_confidence = orch.intent_confidence
             session.dialogue_state = orch.dialogue_state
             session.lead_score = orch.lead_score
@@ -278,8 +299,100 @@ async def _process_utterance(
                 await asyncio.sleep(2)
                 await websocket.close(code=1000)
 
+            if orch.notify_slack and not session._slack_sent:
+                session._slack_sent = True
+                await enqueue(
+                    JobType.SLACK_ALERT,
+                    {
+                        "call_sid": session.call_sid,
+                        "phone": session.phone_number,
+                        "transcript": transcript,
+                        "intent": orch.intent,
+                        "language": language,
+                    },
+                )
+
+            if orch.should_end_call:
+                await asyncio.sleep(2)
+                await websocket.close(code=1000)
+
     except Exception as e:
         log.error("turn.process_error", call_sid=session.call_sid, error=str(e), exc_info=True)
+    finally:
+        session._processing_turn = False
+
+
+async def _process_streamed_transcript(
+    websocket: WebSocket,
+    session: CallSession,
+    stream_sid: str,
+    transcript: str,
+):
+    """Process Deepgram finalized transcript without waiting for buffered STT."""
+    try:
+        async with _inference_semaphore:
+            transcript = (transcript or "").strip()
+            if not transcript:
+                return
+
+            latency = TurnLatency(call_sid=session.call_sid, turn_index=session.turn_index)
+            language = resolve_conversation_language(
+                transcript,
+                None,
+                session.detected_language,
+            )
+            session.detected_language = language
+            if session.was_interrupted:
+                transcript = f"[Customer interrupted] {transcript}"
+                session.was_interrupted = False
+
+            log.info(
+                "turn.user_speech_streaming",
+                call_sid=session.call_sid,
+                transcript=transcript[:100],
+                language=language,
+            )
+
+            session.conversation_history.append({"role": "user", "content": transcript})
+            orch = await ConversationOrchestrator.process_turn(
+                call_sid=session.call_sid,
+                turn_index=session.turn_index,
+                user_text=transcript,
+                language=language,
+                conversation_history=session.conversation_history,
+                system_prompt=session.system_prompt,
+                latency=latency,
+            )
+
+            response_text = orch.response
+            session.current_intent = orch.intent
+            session.follow_up_action = orch.intent_action
+            session.intent_confidence = orch.intent_confidence
+            session.dialogue_state = orch.dialogue_state
+            session.lead_score = orch.lead_score
+            session.conversation_history.append({"role": "assistant", "content": response_text})
+
+            tts_start = time.monotonic()
+            await _generate_and_send_tts(
+                websocket, session, stream_sid, response_text, language=language
+            )
+            latency.mark_tts(int((time.monotonic() - tts_start) * 1000))
+            breakdown = latency.finish()
+            LatencyAggregator.record(breakdown)
+            turn_idx = session.turn_index
+            session.turn_index += 1
+            asyncio.create_task(
+                CRMService.save_turn(
+                    session,
+                    transcript,
+                    response_text,
+                    language,
+                    breakdown["total_ms"],
+                    turn_index=turn_idx,
+                )
+            )
+    except Exception as e:
+        log.error("turn.stream_process_error", call_sid=session.call_sid, error=str(e), exc_info=True)
     finally:
         session._processing_turn = False
 
@@ -308,7 +421,7 @@ async def _generate_and_send_tts(
         log.warning("tts.skip_no_stream_sid", call_sid=session.call_sid)
         return
     audio_bytes = await TTSService.synthesize(
-        truncate_for_voice(text, max_words=14),
+        truncate_for_voice(text, max_words=12),
         language=language,
     )
     if not audio_bytes:
@@ -322,14 +435,18 @@ async def _generate_and_send_tts(
         duration_s=round(len(audio_bytes) / 8000.0, 2),
     )
     session.tts_playing = True
-    for i in range(0, len(audio_bytes), MULAW_CHUNK_BYTES):
-        chunk = audio_bytes[i : i + MULAW_CHUNK_BYTES]
-        await websocket.send_json({
-            "event": "media",
-            "streamSid": stream_sid,
-            "media": {"payload": base64.b64encode(chunk).decode("utf-8")},
-        })
-        await asyncio.sleep(0.02)
+    try:
+        for i in range(0, len(audio_bytes), MULAW_CHUNK_BYTES):
+            chunk = audio_bytes[i : i + MULAW_CHUNK_BYTES]
+            await websocket.send_json({
+                "event": "media",
+                "streamSid": stream_sid,
+                "media": {"payload": base64.b64encode(chunk).decode("utf-8")},
+            })
+            await asyncio.sleep(0.02)
+    except Exception as e:
+        log.warning("tts.stream_interrupted", call_sid=session.call_sid, error=str(e))
+        return
 
     mulaw_duration_s = len(audio_bytes) / 8000.0
     asyncio.create_task(_reset_tts_flag(session, mulaw_duration_s))
@@ -345,6 +462,8 @@ async def send_clear(websocket: WebSocket, stream_sid: str):
 
 
 async def _finalize_call(session: CallSession):
+    if session.stt_stream:
+        await session.stt_stream.close()
     await CRMService.finalize_call(session)
     await MemoryStore.delete(session.call_sid)
     if session.call_db_id:

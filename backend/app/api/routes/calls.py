@@ -53,6 +53,9 @@ async def initiate_call(req: InitiateCallRequest):
             from_=settings.TWILIO_PHONE_NUMBER,
             url=webhook_url,
             method="POST",
+            record=True,
+            recording_status_callback=f"{settings.TWILIO_WEBHOOK_BASE_URL}/api/v1/calls/recording-status",
+            recording_status_callback_method="POST",
             status_callback=f"{settings.TWILIO_WEBHOOK_BASE_URL}/api/v1/calls/status",
             status_callback_method="POST",
         )
@@ -117,6 +120,18 @@ async def call_status_callback(
     return {"received": True}
 
 
+@router.post("/calls/recording-status")
+async def recording_status_callback(
+    CallSid: str = Form(default=""),
+    RecordingUrl: str = Form(default=""),
+    RecordingStatus: str = Form(default=""),
+):
+    """Twilio recording callback — persists URL for dashboard playback."""
+    if CallSid and settings.db_configured:
+        await CRMService.update_recording(CallSid, RecordingUrl, RecordingStatus)
+    return {"received": True}
+
+
 @router.get("/calls")
 async def list_calls(limit: int = 50, offset: int = 0):
     """List recent calls from CRM."""
@@ -126,3 +141,10 @@ async def list_calls(limit: int = 50, offset: int = 0):
         "calls": calls[offset : offset + limit],
         "total": stats.get("total_calls_today", len(calls)),
     }
+
+
+@router.get("/calls/{call_id}/turns")
+async def call_turns(call_id: str):
+    """Return transcript turns for a call."""
+    turns = await CRMService.get_call_turns(call_id)
+    return {"call_id": call_id, "turns": turns}
