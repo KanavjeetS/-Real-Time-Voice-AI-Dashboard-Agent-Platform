@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     STT_STREAM_ENDPOINTING_MS: int = 250
 
     # ── TTS ───────────────────────────────────
-    TTS_PROVIDER: str = "auto"  # auto | edge | kokoro
+    TTS_PROVIDER: str = "edge"  # auto | edge | kokoro
     TTS_VOICE_ENGLISH: str = "af_sarah"
     TTS_VOICE_HINDI: str = "af_sky"
     TTS_EDGE_VOICE_ENGLISH: str = "en-IN-NeerjaNeural"
@@ -54,7 +54,7 @@ class Settings(BaseSettings):
 
     # ── Models ────────────────────────────────
     MODEL_TIER: str = "free"  # free | balanced | full
-    STARTUP_WARM_MODELS: bool = True
+    STARTUP_WARM_MODELS: bool = False
 
     # ── Integrations ─────────────────────────
     SLACK_WEBHOOK_URL: str = ""
